@@ -46,8 +46,8 @@
     function updateChart() {
         if (!chartCanvas || !data) return;
 
-        // Create a full day of 5-minute slots (24h * 12 = 288 slots)
-        const INTERVAL = 5; // minutes
+        // Create a full day of 15-minute slots (24h * 4 = 96 slots)
+        const INTERVAL = 15; // minutes
         const allSlots: {
             label: string;
             value: number | null;
@@ -109,8 +109,8 @@
                             backgroundColor: colors,
                             borderRadius: 1,
                             borderSkipped: false,
-                            barPercentage: 1.0,
-                            categoryPercentage: 1.0,
+                            barPercentage: 0.7,
+                            categoryPercentage: 0.8,
                         },
                     ],
                 },
@@ -168,9 +168,9 @@
                                 autoSkip: true,
                                 maxTicksLimit: 24,
                                 callback: function (value, index) {
-                                    // Show only full hours (every 12 slots = 1 hour with 5min interval)
-                                    if (index % 12 === 0) {
-                                        return `${Math.floor(index / 12)
+                                    // Show only full hours (every 4 slots = 1 hour with 15min interval)
+                                    if (index % 4 === 0) {
+                                        return `${Math.floor(index / 4)
                                             .toString()
                                             .padStart(2, "0")}:00`;
                                     }
