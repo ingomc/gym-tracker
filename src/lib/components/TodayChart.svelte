@@ -4,21 +4,25 @@
 
     Chart.register(...registerables);
 
-    interface HourData {
+    interface Reading {
+        time: string;
+        timestamp: string;
         hour: number;
-        percentage: number | null;
-        level: string | null;
-        dataPoints: number;
+        minute: number;
+        percentage: number;
+        level: string;
     }
 
-    interface TodayData {
+    interface TodayRawData {
         date: string;
-        hourlyData: HourData[];
+        dateFormatted: string;
+        readings: Reading[];
+        count: number;
     }
 
     let { refreshTrigger = null }: { refreshTrigger?: Date | null } = $props();
 
-    let data = $state<TodayData | null>(null);
+    let data = $state<TodayRawData | null>(null);
     let loading = $state(true);
     let error = $state<string | null>(null);
     let chartCanvas = $state<HTMLCanvasElement | null>(null);
@@ -28,7 +32,7 @@
         try {
             loading = true;
             error = null;
-            const response = await fetch("/api/today");
+            const response = await fetch("/api/today-raw");
             if (!response.ok) throw new Error("Failed to fetch");
             data = await response.json();
             updateChart();
@@ -42,23 +46,51 @@
     function updateChart() {
         if (!chartCanvas || !data) return;
 
-        // Filter to gym hours (6-22)
-        const gymHours = data.hourlyData.filter(
-            (h) => h.hour >= 6 && h.hour < 22,
-        );
-        const labels = gymHours.map(
-            (h) => `${h.hour.toString().padStart(2, "0")}:00`,
-        );
-        const values = gymHours.map((h) => h.percentage ?? 0);
-        const currentHour = new Date().getHours();
+        // Create a full day of 5-minute slots (24h * 12 = 288 slots)
+        const INTERVAL = 5; // minutes
+        const allSlots: {
+            label: string;
+            value: number | null;
+            color: string;
+        }[] = [];
 
-        const colors = gymHours.map((h) => {
-            if (h.percentage === null) return "rgba(100, 100, 120, 0.3)";
-            if (h.hour === currentHour) return "rgba(99, 102, 241, 1)";
-            if (h.percentage <= 30) return "rgba(34, 197, 94, 0.8)";
-            if (h.percentage <= 60) return "rgba(234, 179, 8, 0.8)";
-            return "rgba(239, 68, 68, 0.8)";
-        });
+        // Create a map of existing readings by time string
+        const readingMap = new Map<string, Reading>();
+        for (const r of data.readings) {
+            readingMap.set(r.time, r);
+        }
+
+        // Generate all 5-minute slots for 24h
+        for (let h = 0; h < 24; h++) {
+            for (let m = 0; m < 60; m += INTERVAL) {
+                const timeStr = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+                const reading = readingMap.get(timeStr);
+
+                if (reading) {
+                    let color = "rgba(239, 68, 68, 0.8)"; // red
+                    if (reading.percentage <= 30)
+                        color = "rgba(34, 197, 94, 0.8)"; // green
+                    else if (reading.percentage <= 60)
+                        color = "rgba(234, 179, 8, 0.8)"; // yellow
+
+                    allSlots.push({
+                        label: timeStr,
+                        value: reading.percentage,
+                        color,
+                    });
+                } else {
+                    allSlots.push({
+                        label: timeStr,
+                        value: null,
+                        color: "transparent",
+                    });
+                }
+            }
+        }
+
+        const labels = allSlots.map((m) => m.label);
+        const values = allSlots.map((m) => m.value);
+        const colors = allSlots.map((m) => m.color);
 
         if (chart) {
             chart.data.labels = labels;
@@ -75,8 +107,10 @@
                             label: "Auslastung %",
                             data: values,
                             backgroundColor: colors,
-                            borderRadius: 6,
+                            borderRadius: 1,
                             borderSkipped: false,
+                            barPercentage: 1.0,
+                            categoryPercentage: 1.0,
                         },
                     ],
                 },
@@ -95,15 +129,19 @@
                             borderWidth: 1,
                             padding: 12,
                             cornerRadius: 8,
+                            filter: (item) => item.parsed.y !== null,
                             callbacks: {
+                                title: (items) => items[0]?.label || "",
                                 label: (context) => {
-                                    const value = context.parsed.y;
-                                    const hourData =
-                                        gymHours[context.dataIndex];
+                                    if (context.parsed.y === null) return "";
+                                    const timeStr = labels[context.dataIndex];
+                                    const reading = readingMap.get(timeStr);
                                     return [
-                                        `Auslastung: ${value}%`,
-                                        `Datenpunkte: ${hourData.dataPoints}`,
-                                    ];
+                                        `Auslastung: ${context.parsed.y}%`,
+                                        reading
+                                            ? `Level: ${reading.level}`
+                                            : "",
+                                    ].filter(Boolean);
                                 },
                             },
                         },
@@ -126,6 +164,18 @@
                             },
                             ticks: {
                                 color: "#a0a0b0",
+                                maxRotation: 0,
+                                autoSkip: true,
+                                maxTicksLimit: 24,
+                                callback: function (value, index) {
+                                    // Show only full hours (every 12 slots = 1 hour with 5min interval)
+                                    if (index % 12 === 0) {
+                                        return `${Math.floor(index / 12)
+                                            .toString()
+                                            .padStart(2, "0")}:00`;
+                                    }
+                                    return "";
+                                },
                             },
                         },
                     },
@@ -160,13 +210,7 @@
     <div class="card-header">
         <span class="card-title">📈 Heute</span>
         {#if data}
-            <span class="date-label"
-                >{new Date(data.date).toLocaleDateString("de-DE", {
-                    weekday: "long",
-                    day: "numeric",
-                    month: "long",
-                })}</span
-            >
+            <span class="date-label">{data.dateFormatted}</span>
         {/if}
     </div>
 

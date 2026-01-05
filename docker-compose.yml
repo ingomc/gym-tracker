@@ -8,9 +8,10 @@ services:
       - gym-data:/app/data
     environment:
       - NODE_ENV=production
+      - TZ=Europe/Berlin
       - DATABASE_PATH=/app/data/gym.db
       - API_URL=https://www.ai-fitness.de/connect/v1/studio/1412625590/utilization
-      - POLL_INTERVAL_MINUTES=1
+      - POLL_INTERVAL_MINUTES=5
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000" ]
