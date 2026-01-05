@@ -2,8 +2,9 @@ services:
   gym-tracker:
     build: .
     container_name: gym-tracker
-    #    ports:
-    #      - "3000:3000"
+    restart: unless-stopped
+    expose:
+      - "3000"
     volumes:
       - gym-data:/app/data
     environment:
@@ -18,23 +19,14 @@ services:
       - TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.gym-tracker.rule=Host(`ai.ingomc.de`)"
-      - "traefik.http.routers.gym-tracker.entrypoints=websecure"
-      - "traefik.http.routers.gym-tracker.tls.certresolver=letsencrypt"
-      - "traefik.http.services.gym-tracker.loadbalancer.server.port=3000"
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      - "traefik.docker.network=dokploy-network"
+    networks:
+      - dokploy-network
 
 volumes:
   gym-data:
     driver: local
 
 networks:
-  default:
+  dokploy-network:
     external: true
-    name: dokploy-network
