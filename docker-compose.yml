@@ -12,6 +12,10 @@ services:
       - DATABASE_PATH=/app/data/gym.db
       - API_URL=https://www.ai-fitness.de/connect/v1/studio/1412625590/utilization
       - POLL_INTERVAL_MINUTES=15
+      - ORIGIN=https://ai.ingomc.de
+      - PROTOCOL_HEADER=x-forwarded-proto
+      - HOST_HEADER=x-forwarded-host
+      - TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000" ]
@@ -23,3 +27,8 @@ services:
 volumes:
   gym-data:
     driver: local
+
+networks:
+  default:
+    external: true
+    name: dokploy-network
