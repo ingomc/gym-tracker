@@ -16,6 +16,12 @@ services:
       - PROTOCOL_HEADER=x-forwarded-proto
       - HOST_HEADER=x-forwarded-host
       - TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gym-tracker.rule=Host(`ai.ingomc.de`)"
+      - "traefik.http.routers.gym-tracker.entrypoints=websecure"
+      - "traefik.http.routers.gym-tracker.tls.certresolver=letsencrypt"
+      - "traefik.http.services.gym-tracker.loadbalancer.server.port=3000"
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000" ]
