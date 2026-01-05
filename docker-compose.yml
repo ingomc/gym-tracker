@@ -1,0 +1,24 @@
+services:
+  gym-tracker:
+    build: .
+    container_name: gym-tracker
+    ports:
+      - "3000:3000"
+    volumes:
+      - gym-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - DATABASE_PATH=/app/data/gym.db
+      - API_URL=https://www.ai-fitness.de/connect/v1/studio/1412625590/utilization
+      - POLL_INTERVAL_MINUTES=1
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  gym-data:
+    driver: local
