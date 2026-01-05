@@ -54,37 +54,39 @@
             color: string;
         }[] = [];
 
-        // Create a map of existing readings by time string
-        const readingMap = new Map<string, Reading>();
+        // Create a map for grouping readings by slot index
+        const bucketedData = new Map<number, Reading>();
         for (const r of data.readings) {
-            readingMap.set(r.time, r);
+            const slotIndex = Math.floor((r.hour * 60 + r.minute) / INTERVAL);
+            bucketedData.set(slotIndex, r);
         }
 
-        // Generate all 5-minute slots for 24h
-        for (let h = 0; h < 24; h++) {
-            for (let m = 0; m < 60; m += INTERVAL) {
-                const timeStr = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
-                const reading = readingMap.get(timeStr);
+        // Generate all slots for 24h
+        for (let i = 0; i < 96; i++) {
+            const h = Math.floor((i * INTERVAL) / 60);
+            const m = (i * INTERVAL) % 60;
+            const timeStr = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
 
-                if (reading) {
-                    let color = "rgba(239, 68, 68, 0.8)"; // red
-                    if (reading.percentage <= 30)
-                        color = "rgba(34, 197, 94, 0.8)"; // green
-                    else if (reading.percentage <= 60)
-                        color = "rgba(234, 179, 8, 0.8)"; // yellow
+            const reading = bucketedData.get(i);
 
-                    allSlots.push({
-                        label: timeStr,
-                        value: reading.percentage,
-                        color,
-                    });
-                } else {
-                    allSlots.push({
-                        label: timeStr,
-                        value: null,
-                        color: "transparent",
-                    });
-                }
+            if (reading) {
+                let color = "rgba(239, 68, 68, 0.8)"; // red
+                if (reading.percentage <= 30)
+                    color = "rgba(34, 197, 94, 0.8)"; // green
+                else if (reading.percentage <= 60)
+                    color = "rgba(234, 179, 8, 0.8)"; // yellow
+
+                allSlots.push({
+                    label: timeStr,
+                    value: reading.percentage,
+                    color,
+                });
+            } else {
+                allSlots.push({
+                    label: timeStr,
+                    value: null,
+                    color: "transparent",
+                });
             }
         }
 
@@ -134,8 +136,8 @@
                                 title: (items) => items[0]?.label || "",
                                 label: (context) => {
                                     if (context.parsed.y === null) return "";
-                                    const timeStr = labels[context.dataIndex];
-                                    const reading = readingMap.get(timeStr);
+                                    const slotIndex = context.dataIndex;
+                                    const reading = bucketedData.get(slotIndex);
                                     return [
                                         `Auslastung: ${context.parsed.y}%`,
                                         reading
