@@ -1,13 +1,24 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db, schema } from '$lib/server/db';
-import { gte, asc } from 'drizzle-orm';
+import { gte, lt, and, asc } from 'drizzle-orm';
 
-export const GET: RequestHandler = async () => {
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+export const GET: RequestHandler = async ({ url }) => {
+    const dateParam = url.searchParams.get('date');
 
-    // Get all individual readings from today, ordered by timestamp
+    let targetDate: Date;
+    if (dateParam) {
+        // Parse the date parameter (YYYY-MM-DD format)
+        const [year, month, day] = dateParam.split('-').map(Number);
+        targetDate = new Date(year, month - 1, day);
+    } else {
+        targetDate = new Date();
+    }
+
+    const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+    const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+
+    // Get all individual readings for the specified day, ordered by timestamp
     const readings = await db
         .select({
             timestamp: schema.utilizationReadings.timestamp,
@@ -16,7 +27,10 @@ export const GET: RequestHandler = async () => {
             level: schema.utilizationReadings.level,
         })
         .from(schema.utilizationReadings)
-        .where(gte(schema.utilizationReadings.timestamp, startOfDay))
+        .where(and(
+            gte(schema.utilizationReadings.timestamp, startOfDay),
+            lt(schema.utilizationReadings.timestamp, endOfDay)
+        ))
         .orderBy(asc(schema.utilizationReadings.timestamp));
 
     // Format readings with time strings
@@ -30,15 +44,26 @@ export const GET: RequestHandler = async () => {
     }));
 
     // Format date in German
-    const dateFormatted = now.toLocaleDateString('de-DE', {
+    const dateFormatted = startOfDay.toLocaleDateString('de-DE', {
         weekday: 'long',
         day: 'numeric',
         month: 'long',
     });
 
+    // Check if this is today
+    const now = new Date();
+    const isToday = startOfDay.toDateString() === new Date(now.getFullYear(), now.getMonth(), now.getDate()).toDateString();
+
+    // Format date as YYYY-MM-DD in local timezone
+    const year = startOfDay.getFullYear();
+    const month = String(startOfDay.getMonth() + 1).padStart(2, '0');
+    const day = String(startOfDay.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+
     return json({
-        date: startOfDay.toISOString().split('T')[0],
+        date: dateStr,
         dateFormatted,
+        isToday,
         readings: formattedReadings,
         count: formattedReadings.length,
     });
