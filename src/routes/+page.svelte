@@ -77,6 +77,14 @@
     </section>
 </main>
 
+<footer>
+    <p>
+        Dies ist ein privates Projekt und steht in keiner Verbindung zu AI
+        Fitness.
+    </p>
+    <p>Keine Gewähr für die Richtigkeit der angezeigten Daten.</p>
+</footer>
+
 <style>
     header {
         display: flex;
@@ -155,5 +163,19 @@
 
     .heatmap-section {
         margin-top: 0.5rem;
+    }
+
+    footer {
+        margin-top: 3rem;
+        padding: 1.5rem 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+        text-align: center;
+    }
+
+    footer p {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        margin: 0.25rem 0;
+        opacity: 0.6;
     }
 </style>
