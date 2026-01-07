@@ -7,7 +7,7 @@
 </script>
 
 <svelte:head>
-    <title>Gym Tracker - Auslastung</title>
+    <title>AI Fitness Coburg - Studio-Auslastung</title>
 </svelte:head>
 
 <header>
