@@ -73,7 +73,10 @@
             value: number | null;
             color: string;
         }[] = [];
-        for (let i = 0; i < 96; i++) {
+        // Only show slots from 6:00 to 22:00 (typical gym hours)
+        const START_SLOT = 24; // 6:00 (6 * 4)
+        const END_SLOT = 88; // 22:00 (22 * 4)
+        for (let i = START_SLOT; i < END_SLOT; i++) {
             const h = Math.floor((i * INTERVAL) / 60);
             const m = (i * INTERVAL) % 60;
             const timeStr = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
@@ -170,12 +173,12 @@
                                 color: "#a0a0b0",
                                 maxRotation: 0,
                                 autoSkip: true,
-                                maxTicksLimit: 24,
+                                maxTicksLimit: 17,
                                 callback: function (value, index) {
+                                    // Show label every hour (every 4 slots), starting from 6:00
                                     if (index % 4 === 0) {
-                                        return `${Math.floor(index / 4)
-                                            .toString()
-                                            .padStart(2, "0")}:00`;
+                                        const hour = Math.floor(index / 4) + 6;
+                                        return `${hour.toString().padStart(2, "0")}:00`;
                                     }
                                     return "";
                                 },
