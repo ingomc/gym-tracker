@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 # Configuration
 DATABASE_PATH = os.environ.get('DATABASE_PATH', '/app/data/gym.db')
-BUNDESLAND = 'NW'  # North Rhine-Westphalia for AI-Fitness
+BUNDESLAND = 'BY'  # Bayern for AI-Fitness
 
 # Cache for trained model
 model_cache = {
