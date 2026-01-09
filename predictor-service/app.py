@@ -224,7 +224,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'model_trained': model_cache['model'] is not None,
-        'has_weather_regressors': model_cache.get('has_weather', False),
+        'has_weather_regressors': bool(model_cache.get('has_weather', False)),
         'last_trained': model_cache['last_trained'].isoformat() if model_cache['last_trained'] else None
     })
 
