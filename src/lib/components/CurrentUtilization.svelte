@@ -1,10 +1,18 @@
 <script lang="ts">
     import { onMount } from "svelte";
 
+    interface WeatherData {
+        temperature: number;
+        precipitation: number;
+        cloudCover: number;
+        isRaining: boolean;
+    }
+
     interface CurrentData {
         percentage: number | null;
         level: string | null;
         lastUpdated: string | null;
+        weather: WeatherData | null;
         message?: string;
     }
 
@@ -13,6 +21,7 @@
     let data = $state<CurrentData | null>(null);
     let loading = $state(true);
     let error = $state<string | null>(null);
+    let showWeatherPopover = $state(false);
 
     async function fetchData() {
         try {
@@ -59,12 +68,83 @@
         if (percentage <= 60) return "var(--warning)";
         return "var(--danger)";
     }
+
+    function getWeatherIcon(weather: WeatherData): string {
+        if (weather.isRaining) return "🌧️";
+        if (weather.cloudCover > 70) return "☁️";
+        if (weather.cloudCover > 30) return "⛅";
+        return "☀️";
+    }
+
+    function toggleWeatherPopover() {
+        showWeatherPopover = !showWeatherPopover;
+    }
 </script>
 
 <div class="card current-card">
     <div class="card-header">
         <span class="card-title">Aktuell</span>
-        <span class="live-indicator pulse">● LIVE</span>
+        <div class="header-right">
+            {#if data?.weather}
+                <button
+                    class="weather-btn"
+                    onclick={toggleWeatherPopover}
+                    title="Wetter anzeigen"
+                >
+                    {getWeatherIcon(data.weather)}
+                </button>
+                {#if showWeatherPopover}
+                    <div class="weather-popover">
+                        <div class="popover-header">
+                            <span>Aktuelles Wetter</span>
+                            <button
+                                class="close-btn"
+                                onclick={() => (showWeatherPopover = false)}
+                                >×</button
+                            >
+                        </div>
+                        <div class="weather-details">
+                            <div class="weather-row">
+                                <span class="weather-icon">🌡️</span>
+                                <span class="weather-label">Temperatur</span>
+                                <span class="weather-value"
+                                    >{data.weather.temperature.toFixed(
+                                        1,
+                                    )}°C</span
+                                >
+                            </div>
+                            <div class="weather-row">
+                                <span class="weather-icon">💧</span>
+                                <span class="weather-label">Niederschlag</span>
+                                <span class="weather-value"
+                                    >{data.weather.precipitation.toFixed(1)} mm</span
+                                >
+                            </div>
+                            <div class="weather-row">
+                                <span class="weather-icon">☁️</span>
+                                <span class="weather-label">Bewölkung</span>
+                                <span class="weather-value"
+                                    >{data.weather.cloudCover}%</span
+                                >
+                            </div>
+                            <div class="weather-row">
+                                <span class="weather-icon">🌧️</span>
+                                <span class="weather-label">Regen</span>
+                                <span class="weather-value"
+                                    >{data.weather.isRaining
+                                        ? "Ja"
+                                        : "Nein"}</span
+                                >
+                            </div>
+                        </div>
+                        <div class="popover-footer">
+                            Daten von Open-Meteo (Coburg)
+                        </div>
+                    </div>
+                {/if}
+            {/if}
+            <span class="live-indicator pulse">● LIVE</span>
+        </div>
     </div>
 
     {#if loading && !data}
@@ -121,6 +201,101 @@
 <style>
     .current-card {
         text-align: center;
+    }
+
+    .header-right {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        position: relative;
+    }
+
+    .weather-btn {
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 0.5rem;
+        padding: 0.25rem 0.5rem;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .weather-btn:hover {
+        background: rgba(255, 255, 255, 0.15);
+        border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    .weather-popover {
+        position: absolute;
+        top: calc(100% + 0.5rem);
+        right: 0;
+        background: var(--card-bg, #1a1a2e);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 0.75rem;
+        padding: 0;
+        min-width: 220px;
+        z-index: 100;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+        text-align: left;
+    }
+
+    .popover-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        font-weight: 500;
+        font-size: 0.875rem;
+    }
+
+    .close-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 1.25rem;
+        cursor: pointer;
+        padding: 0;
+        line-height: 1;
+    }
+
+    .close-btn:hover {
+        color: var(--text-primary);
+    }
+
+    .weather-details {
+        padding: 0.75rem 1rem;
+    }
+
+    .weather-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.375rem 0;
+    }
+
+    .weather-icon {
+        font-size: 0.875rem;
+        width: 1.25rem;
+    }
+
+    .weather-label {
+        flex: 1;
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+    }
+
+    .weather-value {
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
+
+    .popover-footer {
+        padding: 0.5rem 1rem;
+        font-size: 0.65rem;
+        color: var(--text-secondary);
+        opacity: 0.6;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
     }
 
     .live-indicator {

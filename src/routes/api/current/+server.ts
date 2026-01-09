@@ -16,6 +16,7 @@ export const GET: RequestHandler = async () => {
             percentage: null,
             level: null,
             lastUpdated: null,
+            weather: null,
             message: 'No data available yet'
         });
     }
@@ -25,5 +26,12 @@ export const GET: RequestHandler = async () => {
         percentage: reading.percentage,
         level: reading.level,
         lastUpdated: reading.timestamp.toISOString(),
+        weather: reading.temperature !== null ? {
+            temperature: reading.temperature,
+            precipitation: reading.precipitation,
+            cloudCover: reading.cloudCover,
+            isRaining: reading.isRaining === 1,
+        } : null,
     });
 };
+
