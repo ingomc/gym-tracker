@@ -114,8 +114,9 @@ def train_model():
     
     print(f"[Predictor] Training model with {len(df)} samples...")
     
-    # Check if we have enough weather data (need substantial amount)
-    has_weather = df['temperature'].notna().sum() > 100
+    # Weather regressors disabled for now - need more data to work properly
+    # TODO: Re-enable when we have 2+ weeks of weather data
+    has_weather = False  # df['temperature'].notna().sum() > 100
     
     # Create and configure Prophet model
     model = Prophet(
