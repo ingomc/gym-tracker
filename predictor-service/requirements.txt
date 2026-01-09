@@ -1,0 +1,6 @@
+flask==3.0.0
+prophet==1.1.6
+pandas==2.1.4
+holidays==0.40
+gunicorn==21.2.0
+cmdstanpy==1.2.0

@@ -1,0 +1,10 @@
+# Local development override - creates local network instead of using external dokploy-network
+services:
+  gym-tracker:
+    ports:
+      - "3000:3000"
+    labels: [] # Remove traefik labels locally
+
+networks:
+  dokploy-network:
+    external: false # Create local network instead

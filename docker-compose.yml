@@ -17,9 +17,24 @@ services:
       - PROTOCOL_HEADER=x-forwarded-proto
       - HOST_HEADER=x-forwarded-host
       - TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - PREDICTOR_URL=http://predictor:5000
+    depends_on:
+      - predictor
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=dokploy-network"
+    networks:
+      - dokploy-network
+
+  predictor:
+    build: ./predictor-service
+    container_name: gym-predictor
+    restart: unless-stopped
+    volumes:
+      - gym-data:/app/data:ro
+    environment:
+      - TZ=Europe/Berlin
+      - DATABASE_PATH=/app/data/gym.db
     networks:
       - dokploy-network
 
