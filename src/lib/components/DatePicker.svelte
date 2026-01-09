@@ -85,13 +85,20 @@
         hasData: boolean;
         isToday: boolean;
         isSelected: boolean;
+        isFuture: boolean;
+        isClickable: boolean;
     }[] {
         const year = month.getFullYear();
         const m = month.getMonth();
         const firstDay = new Date(year, m, 1);
         const lastDay = new Date(year, m + 1, 0);
         const today = new Date();
+        today.setHours(0, 0, 0, 0);
         const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+        // Future dates limit (7 days from today)
+        const maxFutureDate = new Date(today);
+        maxFutureDate.setDate(maxFutureDate.getDate() + 7);
 
         const days: {
             date: string;
@@ -100,6 +107,8 @@
             hasData: boolean;
             isToday: boolean;
             isSelected: boolean;
+            isFuture: boolean;
+            isClickable: boolean;
         }[] = [];
 
         // Add days from previous month to fill the first week
@@ -107,26 +116,35 @@
         for (let i = startDayOfWeek - 1; i >= 0; i--) {
             const d = new Date(year, m, -i);
             const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            const isFuture = d > today && d <= maxFutureDate;
+            const hasData = availableDatesSet.has(dateStr);
             days.push({
                 date: dateStr,
                 day: d.getDate(),
                 isCurrentMonth: false,
-                hasData: availableDatesSet.has(dateStr),
+                hasData,
                 isToday: dateStr === todayStr,
                 isSelected: dateStr === selectedDate,
+                isFuture,
+                isClickable: hasData || isFuture,
             });
         }
 
         // Add days of current month
         for (let i = 1; i <= lastDay.getDate(); i++) {
             const dateStr = `${year}-${String(m + 1).padStart(2, "0")}-${String(i).padStart(2, "0")}`;
+            const d = new Date(year, m, i);
+            const isFuture = d > today && d <= maxFutureDate;
+            const hasData = availableDatesSet.has(dateStr);
             days.push({
                 date: dateStr,
                 day: i,
                 isCurrentMonth: true,
-                hasData: availableDatesSet.has(dateStr),
+                hasData,
                 isToday: dateStr === todayStr,
                 isSelected: dateStr === selectedDate,
+                isFuture,
+                isClickable: hasData || isFuture,
             });
         }
 
@@ -135,13 +153,17 @@
         for (let i = 1; i <= remaining; i++) {
             const d = new Date(year, m + 1, i);
             const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            const isFuture = d > today && d <= maxFutureDate;
+            const hasData = availableDatesSet.has(dateStr);
             days.push({
                 date: dateStr,
                 day: i,
                 isCurrentMonth: false,
-                hasData: availableDatesSet.has(dateStr),
+                hasData,
                 isToday: dateStr === todayStr,
                 isSelected: dateStr === selectedDate,
+                isFuture,
+                isClickable: hasData || isFuture,
             });
         }
 
@@ -224,10 +246,11 @@
                         class="calendar-day"
                         class:other-month={!day.isCurrentMonth}
                         class:has-data={day.hasData}
+                        class:is-future={day.isFuture}
                         class:is-today={day.isToday}
                         class:is-selected={day.isSelected}
-                        disabled={!day.hasData}
-                        onclick={() => day.hasData && selectDate(day.date)}
+                        disabled={!day.isClickable}
+                        onclick={() => day.isClickable && selectDate(day.date)}
                     >
                         {day.day}
                     </button>
@@ -365,6 +388,15 @@
 
     .calendar-day.has-data:not(:disabled):hover {
         background: rgba(99, 102, 241, 0.3);
+    }
+
+    .calendar-day.is-future:not(:disabled) {
+        background: rgba(34, 197, 94, 0.15);
+        font-weight: 500;
+    }
+
+    .calendar-day.is-future:not(:disabled):hover {
+        background: rgba(34, 197, 94, 0.3);
     }
 
     .calendar-day.is-today {

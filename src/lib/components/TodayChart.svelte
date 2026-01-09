@@ -49,7 +49,9 @@
 
     async function fetchPredictions(date?: string) {
         try {
-            const url = date ? `/api/predictions?date=${date}` : "/api/predictions";
+            const url = date
+                ? `/api/predictions?date=${date}`
+                : "/api/predictions";
             const response = await fetch(url);
             if (response.ok) {
                 predictions = await response.json();
@@ -70,14 +72,20 @@
             if (!response.ok) throw new Error("Failed to fetch");
             data = await response.json();
             if (data) selectedDate = data.date;
-            
-            // Fetch predictions only for today
-            if (data?.isToday) {
+
+            // Fetch predictions for today and future dates
+            const selectedDateObj = new Date(data.date + "T00:00:00");
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const maxFutureDate = new Date(today);
+            maxFutureDate.setDate(maxFutureDate.getDate() + 7);
+
+            if (selectedDateObj >= today && selectedDateObj <= maxFutureDate) {
                 await fetchPredictions(data.date);
             } else {
                 predictions = null;
             }
-            
+
             updateChart();
         } catch (e) {
             error = e instanceof Error ? e.message : "Unknown error";
@@ -158,9 +166,9 @@
 
         // Build datasets array
         const datasets: any[] = [];
-        
-        // Add prediction dataset first (background layer) - only for today
-        if (data?.isToday && predictions) {
+
+        // Add prediction dataset first (background layer) - for today and future dates
+        if (predictions?.predictions?.length) {
             datasets.push({
                 label: "Vorhersage %",
                 data: predictionValues,
@@ -172,7 +180,7 @@
                 order: 1, // Render behind actual data
             });
         }
-        
+
         // Add actual data dataset (foreground layer)
         datasets.push({
             label: "Auslastung %",
@@ -216,25 +224,47 @@
                                     if (context.parsed.y === null) return "";
                                     const slotIndex = context.dataIndex;
                                     const slot = allSlots[slotIndex];
-                                    const reading = bucketedData.get(slotIndex + START_SLOT);
+                                    const reading = bucketedData.get(
+                                        slotIndex + START_SLOT,
+                                    );
                                     const lines: string[] = [];
-                                    
+
                                     // Show actual reading if available
-                                    if (context.dataset.label === "Auslastung %" && slot?.value !== null) {
-                                        lines.push(`Auslastung: ${slot.value}%`);
-                                        if (reading) lines.push(`Level: ${reading.level}`);
+                                    if (
+                                        context.dataset.label ===
+                                            "Auslastung %" &&
+                                        slot?.value !== null
+                                    ) {
+                                        lines.push(
+                                            `Auslastung: ${slot.value}%`,
+                                        );
+                                        if (reading)
+                                            lines.push(
+                                                `Level: ${reading.level}`,
+                                            );
                                     }
-                                    
+
                                     // Show prediction if available
-                                    if (context.dataset.label === "Vorhersage %" && slot?.prediction !== null) {
-                                        lines.push(`Vorhersage: ${slot.prediction}%`);
+                                    if (
+                                        context.dataset.label ===
+                                            "Vorhersage %" &&
+                                        slot?.prediction !== null
+                                    ) {
+                                        lines.push(
+                                            `Vorhersage: ${slot.prediction}%`,
+                                        );
                                     }
-                                    
+
                                     // Show holiday info
-                                    if (predictions?.isHoliday && predictions.holidayName) {
-                                        lines.push(`Feiertag: ${predictions.holidayName}`);
+                                    if (
+                                        predictions?.isHoliday &&
+                                        predictions.holidayName
+                                    ) {
+                                        lines.push(
+                                            `Feiertag: ${predictions.holidayName}`,
+                                        );
                                     }
-                                    
+
                                     return lines;
                                 },
                             },
