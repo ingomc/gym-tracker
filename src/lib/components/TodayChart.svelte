@@ -120,12 +120,12 @@
     }
 
     function handleSelectDate(date: string) {
-        analytics.dateChange(date, false);
+        analytics.dateChange(date);
         fetchData(date);
     }
 
     function handleGoToToday() {
-        analytics.dateChange(new Date().toISOString().split("T")[0], true);
+        analytics.dateChange(new Date().toISOString().split("T")[0]);
         selectedDate = null;
         fetchData();
     }
