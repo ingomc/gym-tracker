@@ -2,6 +2,7 @@
     import CurrentUtilization from "$lib/components/CurrentUtilization.svelte";
     import TodayChart from "$lib/components/TodayChart.svelte";
     import Heatmap from "$lib/components/Heatmap.svelte";
+    import DataTools from "$lib/components/DataTools.svelte";
 
     let selectedWeeks = $state(4);
 </script>
@@ -54,6 +55,7 @@
     <div class="dashboard-grid">
         <aside>
             <CurrentUtilization />
+            <DataTools />
         </aside>
 
         <section class="main-content">
