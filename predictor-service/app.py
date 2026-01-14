@@ -27,7 +27,7 @@ WEATHER_LON = 10.9628
 model_cache = {
     'model': None,
     'last_trained': None,
-    'retrain_interval': timedelta(hours=24)
+    'retrain_interval': timedelta(hours=6)  # Retrain every 6 hours
 }
 
 

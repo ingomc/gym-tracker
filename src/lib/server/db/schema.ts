@@ -12,6 +12,13 @@ export const utilizationReadings = sqliteTable('utilization_readings', {
   precipitation: real('precipitation'), // mm
   cloudCover: integer('cloud_cover'), // 0-100%
   isRaining: integer('is_raining'), // 0 or 1
+  // Extended weather data
+  uvIndex: real('uv_index'), // 0-11+ UV index
+  sunrise: text('sunrise'), // HH:MM format
+  sunset: text('sunset'), // HH:MM format
+  // School holidays (Bayern)
+  isSchoolHoliday: integer('is_school_holiday'), // 0 or 1
+  holidayName: text('holiday_name'), // e.g. "Winterferien"
 }, (table) => [
   index('idx_weekday_hour').on(table.weekday, table.hour),
   index('idx_timestamp').on(table.timestamp),

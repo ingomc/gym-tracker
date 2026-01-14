@@ -29,6 +29,36 @@ sqlite.exec(`
     CREATE INDEX IF NOT EXISTS idx_timestamp ON utilization_readings(timestamp);
 `);
 
+// Migration: Add new columns if they don't exist
+// SQLite doesn't support IF NOT EXISTS for columns, so we check manually
+function addColumnIfNotExists(table: string, column: string, type: string) {
+    try {
+        const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        const exists = columns.some(col => col.name === column);
+        if (!exists) {
+            sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+            console.log(`[DB] Added column ${column} to ${table}`);
+        }
+    } catch (error) {
+        console.error(`[DB] Failed to add column ${column}:`, error);
+    }
+}
+
+// Weather columns (original)
+addColumnIfNotExists('utilization_readings', 'temperature', 'REAL');
+addColumnIfNotExists('utilization_readings', 'precipitation', 'REAL');
+addColumnIfNotExists('utilization_readings', 'cloud_cover', 'INTEGER');
+addColumnIfNotExists('utilization_readings', 'is_raining', 'INTEGER');
+
+// Extended weather columns (new)
+addColumnIfNotExists('utilization_readings', 'uv_index', 'REAL');
+addColumnIfNotExists('utilization_readings', 'sunrise', 'TEXT');
+addColumnIfNotExists('utilization_readings', 'sunset', 'TEXT');
+
+// School holiday columns (new)
+addColumnIfNotExists('utilization_readings', 'is_school_holiday', 'INTEGER');
+addColumnIfNotExists('utilization_readings', 'holiday_name', 'TEXT');
+
 export const db = drizzle(sqlite, { schema });
 
 export { schema };
