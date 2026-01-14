@@ -4,6 +4,7 @@
         getUtilizationColor,
         getUtilizationColorRGBA,
     } from "$lib/utils/colors";
+    import { analytics } from "$lib/utils/analytics";
 
     interface WeatherData {
         temperature: number;
@@ -79,6 +80,9 @@
     }
 
     function toggleWeatherPopover() {
+        if (!showWeatherPopover) {
+            analytics.weatherView();
+        }
         showWeatherPopover = !showWeatherPopover;
     }
 </script>

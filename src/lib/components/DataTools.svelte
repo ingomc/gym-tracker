@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { analytics } from "$lib/utils/analytics";
+
     let importing = $state(false);
     let exporting = $state(false);
     let message = $state<{ type: "success" | "error"; text: string } | null>(
@@ -24,6 +26,7 @@
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
+            analytics.exportData();
             message = { type: "success", text: "Export erfolgreich!" };
         } catch (e) {
             message = { type: "error", text: "Export fehlgeschlagen" };
@@ -58,6 +61,7 @@
                 throw new Error(result.error || "Import failed");
             }
 
+            analytics.importData(result.imported);
             message = {
                 type: "success",
                 text: `Import erfolgreich: ${result.imported} Einträge importiert, ${result.skipped} übersprungen`,

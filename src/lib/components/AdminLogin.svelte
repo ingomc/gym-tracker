@@ -1,5 +1,6 @@
 <script lang="ts">
     import { isAuthenticated, login, logout } from "$lib/stores/auth";
+    import { analytics } from "$lib/utils/analytics";
 
     let showLoginModal = $state(false);
     let password = $state("");
@@ -14,6 +15,7 @@
         const result = await login(password);
 
         if (result.success) {
+            analytics.login();
             showLoginModal = false;
             password = "";
         } else {
@@ -24,6 +26,7 @@
     }
 
     async function handleLogout() {
+        analytics.logout();
         await logout();
     }
 

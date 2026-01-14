@@ -6,6 +6,7 @@
     import DataTools from "$lib/components/DataTools.svelte";
     import AdminLogin from "$lib/components/AdminLogin.svelte";
     import { isAuthenticated, checkAuth } from "$lib/stores/auth";
+    import { analytics } from "$lib/utils/analytics";
 
     let selectedWeeks = $state(4);
 
@@ -77,7 +78,10 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📊 Wöchentliche Auslastung</span>
-                <select bind:value={selectedWeeks}>
+                <select
+                    bind:value={selectedWeeks}
+                    onchange={() => analytics.heatmapWeeksChange(selectedWeeks)}
+                >
                     <option value={1}>Letzte Woche</option>
                     <option value={2}>Letzte 2 Wochen</option>
                     <option value={4}>Letzte 4 Wochen</option>

@@ -3,6 +3,7 @@
     import { Chart, registerables } from "chart.js";
     import DatePicker from "./DatePicker.svelte";
     import { getUtilizationColorRGBA } from "$lib/utils/colors";
+    import { analytics } from "$lib/utils/analytics";
 
     Chart.register(...registerables);
 
@@ -119,10 +120,12 @@
     }
 
     function handleSelectDate(date: string) {
+        analytics.dateChange(date, false);
         fetchData(date);
     }
 
     function handleGoToToday() {
+        analytics.dateChange(new Date().toISOString().split("T")[0], true);
         selectedDate = null;
         fetchData();
     }
