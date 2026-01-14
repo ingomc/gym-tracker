@@ -48,19 +48,31 @@
     let chart: Chart | null = null;
     let datePicker: DatePicker;
 
-    async function fetchPredictions(date?: string) {
+    async function fetchPredictions(
+        date?: string,
+    ): Promise<PredictionData | null> {
         try {
             const url = date
                 ? `/api/predictions?date=${date}`
                 : "/api/predictions";
             const response = await fetch(url);
             if (response.ok) {
-                predictions = await response.json();
-            } else {
-                predictions = null;
+                return await response.json();
             }
+            return null;
         } catch {
-            predictions = null;
+            return null;
+        }
+    }
+
+    async function fetchReadings(date?: string): Promise<TodayRawData | null> {
+        try {
+            const url = date ? `/api/today-raw?date=${date}` : "/api/today-raw";
+            const response = await fetch(url);
+            if (!response.ok) throw new Error("Failed to fetch");
+            return await response.json();
+        } catch {
+            return null;
         }
     }
 
@@ -68,25 +80,36 @@
         try {
             loading = true;
             error = null;
-            const url = date ? `/api/today-raw?date=${date}` : "/api/today-raw";
-            const response = await fetch(url);
-            if (!response.ok) throw new Error("Failed to fetch");
-            data = await response.json();
-            if (data) selectedDate = data.date;
 
-            // Fetch predictions for today and future dates
-            const selectedDateObj = new Date(data.date + "T00:00:00");
+            // Determine if we should fetch predictions
+            const targetDate = date || new Date().toISOString().split("T")[0];
+            const selectedDateObj = new Date(targetDate + "T00:00:00");
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const maxFutureDate = new Date(today);
             maxFutureDate.setDate(maxFutureDate.getDate() + 7);
 
-            if (selectedDateObj >= today && selectedDateObj <= maxFutureDate) {
-                await fetchPredictions(data.date);
-            } else {
-                predictions = null;
+            const shouldFetchPredictions =
+                selectedDateObj >= today && selectedDateObj <= maxFutureDate;
+
+            // Fetch readings and predictions in parallel
+            const [readingsData, predictionsData] = await Promise.all([
+                fetchReadings(date),
+                shouldFetchPredictions
+                    ? fetchPredictions(date)
+                    : Promise.resolve(null),
+            ]);
+
+            if (!readingsData) {
+                throw new Error("Failed to fetch readings");
             }
 
+            // Update state once with all data
+            data = readingsData;
+            predictions = predictionsData;
+            selectedDate = readingsData.date;
+
+            // Update chart once with complete data
             updateChart();
         } catch (e) {
             error = e instanceof Error ? e.message : "Unknown error";
