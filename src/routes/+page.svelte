@@ -1,10 +1,17 @@
 <script lang="ts">
+    import { onMount } from "svelte";
     import CurrentUtilization from "$lib/components/CurrentUtilization.svelte";
     import TodayChart from "$lib/components/TodayChart.svelte";
     import Heatmap from "$lib/components/Heatmap.svelte";
     import DataTools from "$lib/components/DataTools.svelte";
+    import AdminLogin from "$lib/components/AdminLogin.svelte";
+    import { isAuthenticated, checkAuth } from "$lib/stores/auth";
 
     let selectedWeeks = $state(4);
+
+    onMount(() => {
+        checkAuth();
+    });
 </script>
 
 <svelte:head>
@@ -49,13 +56,16 @@
             </a>
         </div>
     </div>
+    <AdminLogin />
 </header>
 
 <main>
     <div class="dashboard-grid">
         <aside>
             <CurrentUtilization />
-            <DataTools />
+            {#if $isAuthenticated}
+                <DataTools />
+            {/if}
         </aside>
 
         <section class="main-content">

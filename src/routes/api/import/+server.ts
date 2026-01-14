@@ -25,8 +25,15 @@ interface ImportPayload {
 /**
  * Import utilization readings from JSON backup.
  * Uses INSERT OR REPLACE to handle duplicates based on timestamp.
+ * Requires authentication.
  */
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, cookies }) => {
+    // Check authentication
+    const session = cookies.get('auth_session');
+    if (session !== 'valid') {
+        return json({ error: 'Nicht autorisiert' }, { status: 401 });
+    }
+
     try {
         const payload: ImportPayload = await request.json();
 

@@ -6,8 +6,15 @@ import { asc } from 'drizzle-orm';
 
 /**
  * Export all utilization readings as JSON for backup/transfer.
+ * Requires authentication.
  */
-export const GET: RequestHandler = async () => {
+export const GET: RequestHandler = async ({ cookies }) => {
+    // Check authentication
+    const session = cookies.get('auth_session');
+    if (session !== 'valid') {
+        return json({ error: 'Nicht autorisiert' }, { status: 401 });
+    }
+
     try {
         const readings = await db
             .select()
