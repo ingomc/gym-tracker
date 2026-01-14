@@ -38,8 +38,51 @@ services:
     networks:
       - dokploy-network
 
+  # Umami Analytics
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: gym-umami
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      - DATABASE_URL=postgresql://umami:umami_secret_pw@umami-db:5432/umami
+      - DATABASE_TYPE=postgresql
+      - APP_SECRET=super_secret_random_string_change_me_123
+      - DISABLE_UPDATES=true
+    depends_on:
+      umami-db:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.umami.rule=Host(`analytics.ai.ingomc.de`)"
+      - "traefik.http.services.umami.loadbalancer.server.port=3000"
+      - "traefik.docker.network=dokploy-network"
+    networks:
+      - dokploy-network
+
+  umami-db:
+    image: postgres:15-alpine
+    container_name: gym-umami-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=umami
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=umami_secret_pw
+    volumes:
+      - umami-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U umami" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dokploy-network
+
 volumes:
   gym-data:
+    driver: local
+  umami-db-data:
     driver: local
 
 networks:
