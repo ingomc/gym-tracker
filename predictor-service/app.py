@@ -119,11 +119,21 @@ def train_model():
     has_weather = False  # df['temperature'].notna().sum() > 100
     
     # Create and configure Prophet model
+    # Key settings for limited data (only ~1-2 weeks):
+    # - growth='flat': Prevents trend from extrapolating to 0 or negative
+    # - yearly_seasonality=False: We don't have a full year of data
+    # - weekly_seasonality=True: We have enough data for weekly patterns
+    # - daily_seasonality=True: Important for hourly predictions
+    # - seasonality_prior_scale=10: Stronger seasonality signal
+    # - changepoint_prior_scale=0.001: Very rigid trend (almost no changepoints)
     model = Prophet(
-        yearly_seasonality=True,
+        growth='flat',  # Flat growth prevents trend extrapolation to 0
+        yearly_seasonality=False,  # Not enough data for yearly patterns
         weekly_seasonality=True,
         daily_seasonality=True,
-        changepoint_prior_scale=0.05
+        seasonality_mode='additive',  # Additive works better for percentages
+        seasonality_prior_scale=10.0,  # Stronger seasonality patterns
+        changepoint_prior_scale=0.001  # Very stable, no sudden changes
     )
     
     # Add German holidays for Bayern
