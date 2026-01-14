@@ -9,9 +9,6 @@ const WEATHER_LON = 10.9628;
 // Extended weather API with UV index and sun times
 const WEATHER_API_URL = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}&current=temperature_2m,precipitation,cloud_cover,rain,uv_index&daily=sunrise,sunset&timezone=Europe/Berlin&forecast_days=1`;
 
-// Bayern school holidays API
-const HOLIDAYS_API_URL = 'https://ferien-api.de/api/v1/holidays/BY';
-
 interface UtilizationItem {
     startTime: string;
     endTime: string;
@@ -54,37 +51,43 @@ interface SchoolHoliday {
     start: string;
     end: string;
     name: string;
-    slug: string;
 }
 
-// Cache for school holidays (refresh daily)
-let holidayCache: { holidays: SchoolHoliday[]; fetchedAt: Date | null } = {
-    holidays: [],
-    fetchedAt: null
-};
+// Bayern school holidays - static data from Bayerisches Kultusministerium
+// Source: https://www.gesetze-bayern.de (Bekanntmachung vom 7. Dezember 2022)
+const BAYERN_SCHOOL_HOLIDAYS: SchoolHoliday[] = [
+    // 2025/2026 (ab Januar 2026)
+    { start: '2026-02-16', end: '2026-02-20', name: 'Frühjahrsferien' },
+    { start: '2026-03-30', end: '2026-04-10', name: 'Osterferien' },
+    { start: '2026-05-26', end: '2026-06-05', name: 'Pfingstferien' },
+    { start: '2026-08-03', end: '2026-09-14', name: 'Sommerferien' },
+    { start: '2026-11-02', end: '2026-11-06', name: 'Herbstferien' },
+    { start: '2026-12-24', end: '2027-01-08', name: 'Weihnachtsferien' },
+    // 2026/2027
+    { start: '2027-02-08', end: '2027-02-12', name: 'Frühjahrsferien' },
+    { start: '2027-03-22', end: '2027-04-02', name: 'Osterferien' },
+    { start: '2027-05-18', end: '2027-05-28', name: 'Pfingstferien' },
+    { start: '2027-08-02', end: '2027-09-13', name: 'Sommerferien' },
+    { start: '2027-11-02', end: '2027-11-05', name: 'Herbstferien' },
+    { start: '2027-12-24', end: '2028-01-07', name: 'Weihnachtsferien' },
+    // 2027/2028
+    { start: '2028-02-28', end: '2028-03-03', name: 'Frühjahrsferien' },
+    { start: '2028-04-10', end: '2028-04-21', name: 'Osterferien' },
+    { start: '2028-06-06', end: '2028-06-16', name: 'Pfingstferien' },
+    { start: '2028-07-31', end: '2028-09-11', name: 'Sommerferien' },
+    { start: '2028-10-30', end: '2028-11-03', name: 'Herbstferien' },
+    { start: '2028-12-23', end: '2029-01-05', name: 'Weihnachtsferien' },
+    // 2028/2029
+    { start: '2029-02-12', end: '2029-02-16', name: 'Frühjahrsferien' },
+    { start: '2029-03-26', end: '2029-04-06', name: 'Osterferien' },
+    { start: '2029-05-22', end: '2029-06-01', name: 'Pfingstferien' },
+    { start: '2029-07-30', end: '2029-09-10', name: 'Sommerferien' },
+    { start: '2029-10-29', end: '2029-11-02', name: 'Herbstferien' },
+    { start: '2029-12-24', end: '2030-01-04', name: 'Weihnachtsferien' },
+];
 
-async function fetchSchoolHolidays(): Promise<SchoolHoliday[]> {
-    // Check cache (valid for 24 hours)
-    if (holidayCache.fetchedAt &&
-        (Date.now() - holidayCache.fetchedAt.getTime()) < 24 * 60 * 60 * 1000) {
-        return holidayCache.holidays;
-    }
-
-    try {
-        const response = await fetch(HOLIDAYS_API_URL);
-        if (!response.ok) {
-            console.error(`[Holidays] API responded with status ${response.status}`);
-            return holidayCache.holidays; // Return cached data on error
-        }
-
-        const holidays: SchoolHoliday[] = await response.json();
-        holidayCache = { holidays, fetchedAt: new Date() };
-        console.log(`[Holidays] Fetched ${holidays.length} Bayern school holidays`);
-        return holidays;
-    } catch (error) {
-        console.error(`[Holidays] Failed to fetch:`, error);
-        return holidayCache.holidays;
-    }
+function getSchoolHolidays(): SchoolHoliday[] {
+    return BAYERN_SCHOOL_HOLIDAYS;
 }
 
 function checkSchoolHoliday(holidays: SchoolHoliday[], date: Date): { isHoliday: boolean; name: string | null } {
@@ -139,11 +142,11 @@ async function fetchWeather(): Promise<WeatherData | null> {
 
 export async function fetchAndStoreUtilization(): Promise<{ success: boolean; percentage?: number; error?: string }> {
     try {
-        // Fetch utilization, weather, and holidays in parallel
-        const [utilizationResponse, weather, holidays] = await Promise.all([
+        // Get holidays (static data) and fetch utilization + weather in parallel
+        const holidays = getSchoolHolidays();
+        const [utilizationResponse, weather] = await Promise.all([
             fetch(API_URL),
             fetchWeather(),
-            fetchSchoolHolidays(),
         ]);
 
         if (!utilizationResponse.ok) {
