@@ -1,5 +1,9 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import {
+        getUtilizationColor,
+        getUtilizationColorRGBA,
+    } from "$lib/utils/colors";
 
     interface WeatherData {
         temperature: number;
@@ -64,9 +68,7 @@
     }
 
     function getProgressColor(percentage: number): string {
-        if (percentage <= 30) return "var(--success)";
-        if (percentage <= 60) return "var(--warning)";
-        return "var(--danger)";
+        return getUtilizationColorRGBA(percentage, 1);
     }
 
     function getWeatherIcon(weather: WeatherData): string {

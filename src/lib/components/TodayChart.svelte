@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import { Chart, registerables } from "chart.js";
     import DatePicker from "./DatePicker.svelte";
+    import { getUtilizationColorRGBA } from "$lib/utils/colors";
 
     Chart.register(...registerables);
 
@@ -139,10 +140,7 @@
             const predictionValue = predictionMap.get(`${h}:${m}`) ?? null;
 
             if (reading) {
-                let color = "rgba(239, 68, 68, 0.8)";
-                if (reading.percentage <= 30) color = "rgba(34, 197, 94, 0.8)";
-                else if (reading.percentage <= 60)
-                    color = "rgba(234, 179, 8, 0.8)";
+                const color = getUtilizationColorRGBA(reading.percentage, 0.85);
                 allSlots.push({
                     label: timeStr,
                     value: reading.percentage,

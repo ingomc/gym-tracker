@@ -1,5 +1,9 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import {
+        getUtilizationColorRGBA,
+        getUtilizationTextColor,
+    } from "$lib/utils/colors";
 
     interface HourData {
         hour: number;
@@ -77,34 +81,11 @@
 
     function getCellColor(percentage: number | null): string {
         if (percentage === null) return "var(--bg-tertiary)";
-
-        // Green (low) to Yellow (medium) to Red (high)
-        if (percentage <= 25) {
-            const intensity = percentage / 25;
-            return `rgba(34, 197, 94, ${0.3 + intensity * 0.5})`;
-        } else if (percentage <= 50) {
-            const intensity = (percentage - 25) / 25;
-            // Transition from green to yellow
-            const r = Math.round(34 + (234 - 34) * intensity);
-            const g = Math.round(197 + (179 - 197) * intensity);
-            const b = Math.round(94 + (8 - 94) * intensity);
-            return `rgba(${r}, ${g}, ${b}, 0.7)`;
-        } else if (percentage <= 75) {
-            const intensity = (percentage - 50) / 25;
-            // Transition from yellow to red
-            const r = Math.round(234 + (239 - 234) * intensity);
-            const g = Math.round(179 + (68 - 179) * intensity);
-            const b = Math.round(8 + (68 - 8) * intensity);
-            return `rgba(${r}, ${g}, ${b}, 0.8)`;
-        } else {
-            return `rgba(239, 68, 68, ${0.7 + (percentage - 75) / 100})`;
-        }
+        return getUtilizationColorRGBA(percentage, 0.75);
     }
 
     function getTextColor(percentage: number | null): string {
-        if (percentage === null) return "var(--text-secondary)";
-        if (percentage > 40) return "white";
-        return "var(--text-primary)";
+        return getUtilizationTextColor(percentage);
     }
 
     function formatTooltip(hourData: HourData | null): string {
@@ -178,9 +159,9 @@
 
         <!-- Legend -->
         <div class="legend">
-            <span class="legend-label">Niedrig</span>
+            <span class="legend-label">5% (leer)</span>
             <div class="legend-gradient"></div>
-            <span class="legend-label">Hoch</span>
+            <span class="legend-label">50% (voll)</span>
             <span class="legend-info">
                 {data.weeks === 1
                     ? "Letzte Woche"
