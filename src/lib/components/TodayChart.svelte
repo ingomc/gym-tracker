@@ -214,8 +214,26 @@
             borderSkipped: false,
             barPercentage: 0.7,
             categoryPercentage: 0.8,
-            order: 0, // Render in front
+            // Render in front
+            order: 0,
         });
+
+        // Add Max Line (Dashed) - All Time High
+        const allTimeMax = data.allTimeMax || 0;
+        if (allTimeMax > 0) {
+            datasets.push({
+                label: `Rekord: ${allTimeMax}%`,
+                data: Array(labels.length).fill(allTimeMax),
+                type: "line",
+                borderColor: "rgba(239, 68, 68, 0.5)", // Red-ish color for record
+                borderWidth: 1,
+                borderDash: [5, 5],
+                pointRadius: 0,
+                pointHoverRadius: 0,
+                fill: false,
+                order: -1, // Topmost
+            });
+        }
 
         if (chart) {
             chart.data.labels = labels;
@@ -232,7 +250,18 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: { display: false },
+                        legend: {
+                            display: true,
+                            labels: {
+                                color: "#a0a0b0",
+                                boxWidth: 10,
+                                font: {
+                                    size: 10,
+                                },
+                                filter: (item) =>
+                                    item.text.startsWith("Rekord"), // Only show Record line in legend
+                            },
+                        },
                         tooltip: {
                             backgroundColor: "rgba(26, 26, 46, 0.95)",
                             titleColor: "#fff",

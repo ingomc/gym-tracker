@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db, schema } from '$lib/server/db';
-import { gte, lt, and, asc } from 'drizzle-orm';
+import { gte, lt, and, asc, max } from 'drizzle-orm';
 
 export const GET: RequestHandler = async ({ url }) => {
     const dateParam = url.searchParams.get('date');
@@ -60,10 +60,16 @@ export const GET: RequestHandler = async ({ url }) => {
     const day = String(startOfDay.getDate()).padStart(2, '0');
     const dateStr = `${year}-${month}-${day}`;
 
+    // Get all-time maximum utilization
+    const [maxResult] = await db
+        .select({ maxPct: max(schema.utilizationReadings.percentage) })
+        .from(schema.utilizationReadings);
+
     return json({
         date: dateStr,
         dateFormatted,
         isToday,
+        allTimeMax: maxResult?.maxPct || 0,
         readings: formattedReadings,
         count: formattedReadings.length,
     });
