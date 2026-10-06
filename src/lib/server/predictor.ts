@@ -1,88 +1,97 @@
-/**
- * Predictor service client - calls Python Prophet microservice for predictions.
- */
+import { studioOpeningHours, studioWeekday } from '../utils/studio-time';
 
-interface PredictionResult {
+export interface ForecastWeather {
+    temperature: number;
+    precipitation: number;
+    cloudCover: number;
+    fetchedAt: string;
+    targetAt: string;
+    provider: 'open-meteo';
+    source: 'forecast';
+}
+
+export interface PredictionResult {
     hour: number;
     minute: number;
     percentage: number;
+    targetAt: string;
+    lower: number | null;
+    upper: number | null;
+    status: 'open';
+    baselinePercentage?: number;
+    weatherAdjustment?: number;
+    weather?: ForecastWeather | null;
+    intervalCalibration?: string;
 }
 
-interface PredictionResponse {
+export interface PredictionResponse {
     date: string;
     weekday: number;
+    status: 'ready' | 'training' | 'unavailable';
     isHoliday: boolean;
     holidayName: string | null;
+    isSchoolHoliday?: boolean;
+    schoolHolidayName?: string | null;
+    issuedAt: string | null;
+    trainedThrough: string | null;
+    modelVersion: string | null;
+    intervalCoverage: number;
+    openingHours: { startTime: string; endTime: string };
     predictions: PredictionResult[];
     error?: string;
 }
 
-// URL of the Python predictor service (set via env var or default for Docker)
 const PREDICTOR_URL = process.env.PREDICTOR_URL || 'http://predictor:5000';
 
-/**
- * Get predictions for a given date from the Python Prophet service.
- */
-export async function predict(date: Date): Promise<PredictionResponse> {
-    // Format date as YYYY-MM-DD
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const dateStr = `${year}-${month}-${day}`;
-
-    try {
-        const response = await fetch(`${PREDICTOR_URL}/predict?date=${dateStr}`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(10000), // 10 second timeout
-        });
-
-        if (!response.ok) {
-            console.error(`[Predictor] Service returned ${response.status}`);
-            return createEmptyResponse(date);
-        }
-
-        const data = await response.json();
-        return data as PredictionResponse;
-    } catch (error) {
-        console.error('[Predictor] Failed to fetch predictions:', error);
-        return createEmptyResponse(date);
-    }
-}
-
-/**
- * Check if the predictor service is healthy.
- */
-export async function isReady(): Promise<boolean> {
-    try {
-        const response = await fetch(`${PREDICTOR_URL}/health`, {
-            method: 'GET',
-            signal: AbortSignal.timeout(5000),
-        });
-
-        if (!response.ok) return false;
-
-        const data = await response.json();
-        return data.model_trained === true;
-    } catch {
-        return false;
-    }
-}
-
-/**
- * Create an empty response for when the service is unavailable.
- */
-function createEmptyResponse(date: Date): PredictionResponse {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-
+function unavailable(date: string, error: string, status: 'training' | 'unavailable' = 'unavailable'): PredictionResponse {
+    const hours = studioOpeningHours(date);
     return {
-        date: `${year}-${month}-${day}`,
-        weekday: date.getDay(),
-        isHoliday: false,
-        holidayName: null,
-        predictions: [],
-        error: 'Predictor service unavailable',
+        date, weekday: studioWeekday(date), status,
+        isHoliday: false, holidayName: null,
+        issuedAt: null, trainedThrough: null, modelVersion: null,
+        intervalCoverage: 0.8,
+        openingHours: {
+            startTime: `${String(hours.startHour).padStart(2, '0')}:00:00`,
+            endTime: `${String(hours.endHour).padStart(2, '0')}:00:00`,
+        },
+        predictions: [], error,
     };
+}
+
+function isPrediction(value: unknown): value is PredictionResult {
+    if (!value || typeof value !== 'object') return false;
+    const point = value as PredictionResult;
+    const bounded = (value: unknown): value is number => typeof value === 'number'
+        && Number.isFinite(value) && value >= 0 && value <= 100;
+    return Number.isInteger(point.hour) && point.hour >= 0 && point.hour < 24
+        && [0, 15, 30, 45].includes(point.minute) && bounded(point.percentage)
+        && typeof point.targetAt === 'string' && Number.isFinite(Date.parse(point.targetAt))
+        && (point.lower === null || bounded(point.lower))
+        && (point.upper === null || bounded(point.upper))
+        && (point.lower === null || point.upper === null || point.lower <= point.upper);
+}
+
+/** The service owns readiness; preflight health requests would race startup training. */
+export async function predict(date: string): Promise<{ data: PredictionResponse; httpStatus: number }> {
+    try {
+        const response = await fetch(`${PREDICTOR_URL}/predict?date=${encodeURIComponent(date)}`, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(10000),
+        });
+        const body = await response.json();
+        if (!response.ok) {
+            const status = body?.status === 'training' ? 'training' : 'unavailable';
+            const message = typeof body?.error === 'string' ? body.error
+                : 'Die Prognose ist vorübergehend nicht verfügbar.';
+            return { data: unavailable(date, message, status), httpStatus: response.status === 400 ? 400 : 503 };
+        }
+        if (body?.date !== date || body?.status !== 'ready' || !Array.isArray(body.predictions)
+            || !body.predictions.every(isPrediction)) {
+            return { data: unavailable(date, 'Die Prognose enthält ungültige Daten.'), httpStatus: 502 };
+        }
+        return { data: body as PredictionResponse, httpStatus: 200 };
+    } catch (error) {
+        console.error('[Predictor] Request failed:', error instanceof Error ? error.message : 'Unknown error');
+        return { data: unavailable(date, 'Die Prognose ist vorübergehend nicht erreichbar.'), httpStatus: 503 };
+    }
 }

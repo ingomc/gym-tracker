@@ -2,6 +2,8 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db, schema } from '$lib/server/db';
 import { desc } from 'drizzle-orm';
+import { getUtilizationSourceSnapshot } from '$lib/server/fetcher';
+import { getPollIntervalMinutes, getUtilizationStatus } from '$lib/server/utilization-status';
 
 export const GET: RequestHandler = async () => {
     // Get the latest reading
@@ -11,27 +13,23 @@ export const GET: RequestHandler = async () => {
         .orderBy(desc(schema.utilizationReadings.timestamp))
         .limit(1);
 
-    if (latest.length === 0) {
-        return json({
-            percentage: null,
-            level: null,
-            lastUpdated: null,
-            weather: null,
-            message: 'No data available yet'
-        });
-    }
-
     const reading = latest[0];
+    const status = getUtilizationStatus({
+        now: new Date(),
+        lastUpdated: reading?.timestamp ?? null,
+        source: getUtilizationSourceSnapshot(),
+        pollIntervalMinutes: getPollIntervalMinutes(),
+    });
     return json({
-        percentage: reading.percentage,
-        level: reading.level,
-        lastUpdated: reading.timestamp.toISOString(),
-        weather: reading.temperature !== null ? {
+        status,
+        percentage: status === 'closed' ? 0 : status === 'unavailable' ? null : reading?.percentage ?? null,
+        level: status === 'closed' || status === 'unavailable' ? null : reading?.level ?? null,
+        lastUpdated: reading?.timestamp.toISOString() ?? null,
+        weather: status === 'live' && reading && reading.temperature !== null ? {
             temperature: reading.temperature,
             precipitation: reading.precipitation,
             cloudCover: reading.cloudCover,
             isRaining: reading.isRaining === 1,
         } : null,
-    });
+    }, { headers: { 'Cache-Control': 'no-store' } });
 };
-

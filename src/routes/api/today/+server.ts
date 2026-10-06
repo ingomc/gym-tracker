@@ -1,38 +1,25 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db, schema } from '$lib/server/db';
-import { eq, and, gte, sql } from 'drizzle-orm';
+import { and, asc, gte, lt } from 'drizzle-orm';
+import { isValidStudioDate, studioDateString, studioDayBounds, studioParts } from '$lib/utils/studio-time';
 
-export const GET: RequestHandler = async () => {
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    // Get all readings from today, grouped by hour with the latest value per hour
-    const readings = await db
-        .select({
-            hour: schema.utilizationReadings.hour,
-            percentage: sql<number>`MAX(${schema.utilizationReadings.percentage})`.as('percentage'),
-            level: schema.utilizationReadings.level,
-            count: sql<number>`COUNT(*)`.as('count'),
-        })
-        .from(schema.utilizationReadings)
-        .where(gte(schema.utilizationReadings.timestamp, startOfDay))
-        .groupBy(schema.utilizationReadings.hour)
-        .orderBy(schema.utilizationReadings.hour);
-
-    // Create a full 24-hour array with nulls for missing hours
-    const hourlyData = Array.from({ length: 24 }, (_, hour) => {
-        const reading = readings.find(r => r.hour === hour);
-        return {
-            hour,
-            percentage: reading?.percentage ?? null,
-            level: reading?.level ?? null,
-            dataPoints: reading?.count ?? 0,
-        };
-    });
-
-    return json({
-        date: startOfDay.toISOString().split('T')[0],
-        hourlyData,
-    });
+export const GET: RequestHandler = async ({ url }) => {
+    const date = url.searchParams.get('date') ?? studioDateString();
+    if (!isValidStudioDate(date)) return json({ error: 'Ungültiges Datum. Erwartet wird YYYY-MM-DD.' }, { status: 400 });
+    const { start, end } = studioDayBounds(date);
+    const readings = await db.select().from(schema.utilizationReadings)
+        .where(and(gte(schema.utilizationReadings.timestamp, start), lt(schema.utilizationReadings.timestamp, end)))
+        .orderBy(asc(schema.utilizationReadings.timestamp));
+    const hourlyData = Array.from({ length: 24 }, (_, hour) => ({
+        hour, percentage: null as number | null, level: null as string | null, dataPoints: 0,
+    }));
+    // Keep the last observed value in each hour, rather than labelling the maximum as latest.
+    for (const reading of readings) {
+        const hour = hourlyData[studioParts(reading.timestamp).hour];
+        hour.percentage = reading.percentage;
+        hour.level = reading.level;
+        hour.dataPoints++;
+    }
+    return json({ date, hourlyData });
 };

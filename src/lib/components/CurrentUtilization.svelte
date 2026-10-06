@@ -1,387 +1,88 @@
 <script lang="ts">
-    import { onMount } from "svelte";
-    import {
-        getUtilizationColor,
-        getUtilizationColorRGBA,
-    } from "$lib/utils/colors";
-    import { analytics } from "$lib/utils/analytics";
+    import { onMount } from 'svelte';
+    import { getUtilizationColor } from '$lib/utils/colors';
 
-    interface WeatherData {
-        temperature: number;
-        precipitation: number;
-        cloudCover: number;
-        isRaining: boolean;
-    }
-
+    interface WeatherData { temperature: number; precipitation: number; cloudCover: number; isRaining: boolean; }
     interface CurrentData {
+        status: 'live' | 'closed' | 'stale' | 'unavailable';
         percentage: number | null;
         level: string | null;
         lastUpdated: string | null;
         weather: WeatherData | null;
         message?: string;
     }
-
     let { refreshTrigger = null }: { refreshTrigger?: Date | null } = $props();
-
     let data = $state<CurrentData | null>(null);
     let loading = $state(true);
-    let error = $state<string | null>(null);
-    let showWeatherPopover = $state(false);
+    let failed = $state(false);
+    let now = $state(Date.now());
+    let controller: AbortController | null = null;
+    let sequence = 0;
 
+    const statusText = $derived(failed ? 'Abruf fehlgeschlagen' : data?.status === 'unavailable' ? 'Keine aktuelle Messung' : data?.status === 'stale'
+        ? 'Veralteter Messwert' : data?.status === 'closed' ? 'Geschlossen' : data?.status === 'live' ? 'Geöffnet' : 'Wird geladen …');
+    const age = $derived(data?.lastUpdated ? Math.max(0, Math.floor((now - new Date(data.lastUpdated).getTime()) / 60000)) : null);
+    const ageText = $derived(age === null ? 'Noch keine Messung' : age < 1 ? 'gerade eben' : age < 60 ? `vor ${age} Min.` : age < 1440 ? `vor ${Math.floor(age / 60)} Std. ${age % 60} Min.` : `vor ${Math.floor(age / 1440)} Tagen`);
+    const percentage = $derived(failed || data?.status === 'unavailable' ? null : data?.percentage ?? null);
+    const color = $derived(data?.status === 'live' && !failed ? getUtilizationColor(percentage) : 'var(--text-secondary)');
+    function formatTime(timestamp: string | null) {
+        return timestamp ? new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp)) : '';
+    }
     async function fetchData() {
+        const request = ++sequence;
+        controller?.abort();
+        const active = new AbortController();
+        controller = active;
+        loading = true;
         try {
-            loading = true;
-            error = null;
-            const response = await fetch("/api/current");
-            if (!response.ok) throw new Error("Failed to fetch");
-            data = await response.json();
-        } catch (e) {
-            error = e instanceof Error ? e.message : "Unknown error";
+            const response = await fetch('/api/current', { signal: active.signal });
+            if (!response.ok) throw new Error('unavailable');
+            const result: CurrentData = await response.json();
+            if (request !== sequence) return;
+            data = result;
+            failed = false;
+            now = Date.now();
+        } catch {
+            if (request === sequence && !active.signal.aborted) failed = true;
         } finally {
-            loading = false;
+            if (request === sequence) loading = false;
         }
     }
-
     onMount(() => {
-        fetchData();
-        // Auto-refresh every 30 seconds
-        const interval = setInterval(fetchData, 30000);
-        return () => clearInterval(interval);
+        void fetchData();
+        const interval = setInterval(() => { now = Date.now(); void fetchData(); }, 30000);
+        return () => { clearInterval(interval); ++sequence; controller?.abort(); };
     });
-
-    $effect(() => {
-        if (refreshTrigger) {
-            fetchData();
-        }
-    });
-
-    function getLevelClass(level: string | null): string {
-        if (!level) return "";
-        return `level-${level.toLowerCase()}`;
-    }
-
-    function formatTime(isoString: string | null): string {
-        if (!isoString) return "-";
-        return new Date(isoString).toLocaleTimeString("de-DE", {
-            hour: "2-digit",
-            minute: "2-digit",
-        });
-    }
-
-    function getProgressColor(percentage: number): string {
-        return getUtilizationColorRGBA(percentage, 1);
-    }
-
-    function getWeatherIcon(weather: WeatherData): string {
-        if (weather.isRaining) return "🌧️";
-        if (weather.cloudCover > 70) return "☁️";
-        if (weather.cloudCover > 30) return "⛅";
-        return "☀️";
-    }
-
-    function toggleWeatherPopover() {
-        if (!showWeatherPopover) {
-            analytics.weatherView();
-        }
-        showWeatherPopover = !showWeatherPopover;
-    }
+    $effect(() => { if (refreshTrigger) void fetchData(); });
 </script>
 
-<div class="card current-card">
-    <div class="card-header">
-        <span class="card-title">Aktuell</span>
-        <div class="header-right">
-            {#if data?.weather}
-                <button
-                    class="weather-btn"
-                    onclick={toggleWeatherPopover}
-                    title="Wetter anzeigen"
-                >
-                    {getWeatherIcon(data.weather)}
-                </button>
-                {#if showWeatherPopover}
-                    <div class="weather-popover">
-                        <div class="popover-header">
-                            <span>Aktuelles Wetter</span>
-                            <button
-                                class="close-btn"
-                                onclick={() => (showWeatherPopover = false)}
-                                >×</button
-                            >
-                        </div>
-                        <div class="weather-details">
-                            <div class="weather-row">
-                                <span class="weather-icon">🌡️</span>
-                                <span class="weather-label">Temperatur</span>
-                                <span class="weather-value"
-                                    >{data.weather.temperature.toFixed(
-                                        1,
-                                    )}°C</span
-                                >
-                            </div>
-                            <div class="weather-row">
-                                <span class="weather-icon">💧</span>
-                                <span class="weather-label">Niederschlag</span>
-                                <span class="weather-value"
-                                    >{data.weather.precipitation.toFixed(1)} mm</span
-                                >
-                            </div>
-                            <div class="weather-row">
-                                <span class="weather-icon">☁️</span>
-                                <span class="weather-label">Bewölkung</span>
-                                <span class="weather-value"
-                                    >{data.weather.cloudCover}%</span
-                                >
-                            </div>
-                            <div class="weather-row">
-                                <span class="weather-icon">🌧️</span>
-                                <span class="weather-label">Regen</span>
-                                <span class="weather-value"
-                                    >{data.weather.isRaining
-                                        ? "Ja"
-                                        : "Nein"}</span
-                                >
-                            </div>
-                        </div>
-                        <div class="popover-footer">
-                            Daten von Open-Meteo (Coburg)
-                        </div>
-                    </div>
-                {/if}
-            {/if}
-            <span class="live-indicator pulse">● LIVE</span>
-        </div>
+<section class="card current-card" aria-label="Aktuelle Studio-Auslastung" aria-busy={loading}>
+    <div class="current-value" style={`color: ${color}`}>
+        <span class="percentage">{percentage ?? '–'}<span class="percent-sign">%</span></span>
     </div>
-
-    {#if loading && !data}
-        <div class="loading">
-            <div class="spinner"></div>
-        </div>
-    {:else if error}
-        <div class="error">
-            <p>Fehler beim Laden</p>
-            <button class="btn btn-ghost" onclick={fetchData}
-                >Erneut versuchen</button
-            >
-        </div>
-    {:else if data?.percentage === null}
-        <div class="no-data">
-            <p>Noch keine Daten</p>
-            <span class="hint">Warte auf erste Messung...</span>
-        </div>
-    {:else if data}
-        <div class="percentage-display">
-            <span class="percentage-value">{data.percentage}</span>
-            <span class="percentage-sign">%</span>
-        </div>
-
-        <div class="progress-bar">
-            <div
-                class="progress-fill"
-                style="width: {data.percentage}%; background: {getProgressColor(
-                    data.percentage,
-                )}"
-            ></div>
-        </div>
-
-        <div class="level-row">
-            <span class="level-badge {getLevelClass(data.level)}">
-                {#if data.level === "LOW"}
-                    🟢 Niedrig
-                {:else if data.level === "MEDIUM"}
-                    🟡 Mittel
-                {:else if data.level === "HIGH"}
-                    🔴 Hoch
-                {:else}
-                    {data.level}
-                {/if}
-            </span>
-        </div>
-
-        <div class="last-update">
-            Letzte Messung: {formatTime(data.lastUpdated)}
-        </div>
-    {/if}
-</div>
+    <div class="current-info" aria-live="polite">
+        <div class="current-title"><h1>Jetzt</h1><span class="status" class:live={data?.status === 'live' && !failed}>{statusText}</span></div>
+        <time datetime={data?.lastUpdated ?? undefined} title={formatTime(data?.lastUpdated ?? null)}>{data?.lastUpdated ? `Messung ${ageText}` : 'Noch keine Messung'}</time>
+        {#if failed}<button class="retry" onclick={fetchData}>Erneut versuchen</button>{/if}
+    </div>
+</section>
 
 <style>
-    .current-card {
-        text-align: center;
-    }
-
-    .header-right {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        position: relative;
-    }
-
-    .weather-btn {
-        background: rgba(255, 255, 255, 0.1);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 0.5rem;
-        padding: 0.25rem 0.5rem;
-        font-size: 1rem;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-
-    .weather-btn:hover {
-        background: rgba(255, 255, 255, 0.15);
-        border-color: rgba(255, 255, 255, 0.25);
-    }
-
-    .weather-popover {
-        position: absolute;
-        top: calc(100% + 0.5rem);
-        right: 0;
-        background: var(--card-bg, #1a1a2e);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 0.75rem;
-        padding: 0;
-        min-width: 220px;
-        z-index: 100;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
-        text-align: left;
-    }
-
-    .popover-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.75rem 1rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        font-weight: 500;
-        font-size: 0.875rem;
-    }
-
-    .close-btn {
-        background: none;
-        border: none;
-        color: var(--text-secondary);
-        font-size: 1.25rem;
-        cursor: pointer;
-        padding: 0;
-        line-height: 1;
-    }
-
-    .close-btn:hover {
-        color: var(--text-primary);
-    }
-
-    .weather-details {
-        padding: 0.75rem 1rem;
-    }
-
-    .weather-row {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.375rem 0;
-    }
-
-    .weather-icon {
-        font-size: 0.875rem;
-        width: 1.25rem;
-    }
-
-    .weather-label {
-        flex: 1;
-        font-size: 0.8rem;
-        color: var(--text-secondary);
-    }
-
-    .weather-value {
-        font-size: 0.8rem;
-        font-weight: 500;
-    }
-
-    .popover-footer {
-        padding: 0.5rem 1rem;
-        font-size: 0.65rem;
-        color: var(--text-secondary);
-        opacity: 0.6;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .live-indicator {
-        color: var(--success);
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-
-    .loading,
-    .error,
-    .no-data {
-        padding: 2rem;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 1rem;
-    }
-
-    .error p,
-    .no-data p {
-        color: var(--text-secondary);
-    }
-
-    .hint {
-        font-size: 0.75rem;
-        color: var(--text-secondary);
-        opacity: 0.7;
-    }
-
-    .percentage-display {
-        display: flex;
-        align-items: baseline;
-        justify-content: center;
-        margin: 1rem 0;
-    }
-
-    .percentage-value {
-        font-size: 4rem;
-        font-weight: 700;
-        line-height: 1;
-        background: linear-gradient(
-            135deg,
-            var(--accent-primary),
-            var(--accent-secondary)
-        );
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-    }
-
-    .percentage-sign {
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        margin-left: 0.25rem;
-    }
-
-    .progress-bar {
-        height: 8px;
-        background: var(--bg-tertiary);
-        border-radius: 4px;
-        overflow: hidden;
-        margin: 1rem 0;
-    }
-
-    .progress-fill {
-        height: 100%;
-        border-radius: 4px;
-        transition:
-            width 0.5s ease,
-            background 0.3s ease;
-    }
-
-    .level-row {
-        margin: 1rem 0;
-    }
-
-    .last-update {
-        font-size: 0.75rem;
-        color: var(--text-secondary);
-        margin-top: 1rem;
+    .current-card { display: flex; align-items: center; gap: 18px; padding: 14px 20px; }
+    .current-value { flex-shrink: 0; }
+    .percentage { font-size: 3rem; font-weight: 650; line-height: 1; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+    .percent-sign { font-size: 1.35rem; margin-left: 3px; font-weight: 500; }
+    .current-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .current-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+    h1 { font-size: .95rem; font-weight: 600; }
+    .status { color: var(--text-secondary); font-size: .75rem; }
+    .status.live::before { content: ''; display: inline-block; width: 5px; height: 5px; background: #22c55e; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    time { color: var(--text-secondary); font-size: .68rem; }
+    .retry { color: var(--accent-primary); background: none; border: none; padding: 0; text-align: left; font-size: .7rem; }
+    @media (max-width: 700px) {
+        .current-card { gap: 14px; padding: 12px 14px; }
+        .percentage { font-size: 2.8rem; } .percent-sign { font-size: 1.25rem; }
+        .current-info { gap: 4px; } .current-title { gap: 8px; }
+        h1 { font-size: .85rem; } .status { font-size: .7rem; } time { font-size: .64rem; }
     }
 </style>

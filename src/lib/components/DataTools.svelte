@@ -1,5 +1,9 @@
 <script lang="ts">
     import { analytics } from "$lib/utils/analytics";
+    import { studioDateString } from "$lib/utils/studio-time";
+
+    const maxImportBytes = 16 * 1024 * 1024;
+    const importSizeMessage = "Die Datei ist zu groß. Maximal 16 MiB sind erlaubt.";
 
     let importing = $state(false);
     let exporting = $state(false);
@@ -20,7 +24,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = `gym-tracker-export-${new Date().toISOString().split("T")[0]}.json`;
+            a.download = `gym-tracker-export-${studioDateString()}.json`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -41,20 +45,25 @@
             message = { type: "error", text: "Bitte wähle eine Datei aus" };
             return;
         }
+        if (file.size > maxImportBytes) {
+            message = { type: "error", text: importSizeMessage };
+            return;
+        }
 
         try {
             importing = true;
             message = null;
 
             const text = await file.text();
-            const data = JSON.parse(text);
+            JSON.parse(text);
 
             const response = await fetch("/api/import", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(data),
+                body: text,
             });
 
+            if (response.status === 413) throw new Error(importSizeMessage);
             const result = await response.json();
 
             if (!response.ok) {

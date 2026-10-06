@@ -1,7 +1,8 @@
-import cron from 'node-cron';
+import cron, { type ScheduledTask } from 'node-cron';
 import { fetchAndStoreUtilization } from './fetcher';
+import { getPollIntervalMinutes } from './utilization-status';
 
-let cronJob: cron.ScheduledTask | null = null;
+let cronJob: ScheduledTask | null = null;
 
 export function startCronJob(): void {
     if (cronJob) {
@@ -9,7 +10,7 @@ export function startCronJob(): void {
         return;
     }
 
-    const intervalMinutes = parseInt(process.env.POLL_INTERVAL_MINUTES || '1', 10);
+    const intervalMinutes = getPollIntervalMinutes();
 
     // Create cron expression: run every X minutes
     const cronExpression = intervalMinutes === 1
@@ -20,7 +21,7 @@ export function startCronJob(): void {
 
     cronJob = cron.schedule(cronExpression, async () => {
         await fetchAndStoreUtilization();
-    });
+    }, { timezone: 'Europe/Berlin', noOverlap: true });
 
     // Run immediately on startup
     console.log('Running initial fetch...');

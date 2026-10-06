@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text, real, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, integer, text, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const utilizationReadings = sqliteTable('utilization_readings', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -22,8 +22,8 @@ export const utilizationReadings = sqliteTable('utilization_readings', {
 }, (table) => [
   index('idx_weekday_hour').on(table.weekday, table.hour),
   index('idx_timestamp').on(table.timestamp),
+  uniqueIndex('idx_readings_timestamp_unique').on(table.timestamp),
 ]);
 
 export type UtilizationReading = typeof utilizationReadings.$inferSelect;
 export type NewUtilizationReading = typeof utilizationReadings.$inferInsert;
-

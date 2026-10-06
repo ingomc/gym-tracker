@@ -1,31 +1,14 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { predict, isReady } from '$lib/server/predictor';
+import { predict } from '$lib/server/predictor';
+import { addStudioDays, isValidStudioDate, studioDateString } from '$lib/utils/studio-time';
 
 export const GET: RequestHandler = async ({ url }) => {
-    const dateParam = url.searchParams.get('date');
-
-    let targetDate: Date;
-    if (dateParam) {
-        // Parse the date parameter (YYYY-MM-DD format)
-        const [year, month, day] = dateParam.split('-').map(Number);
-        targetDate = new Date(year, month - 1, day);
-    } else {
-        targetDate = new Date();
+    const today = studioDateString();
+    const date = url.searchParams.get('date') ?? today;
+    if (!isValidStudioDate(date) || date > addStudioDays(today, 7)) {
+        return json({ status: 'unavailable', error: 'Bitte ein gültiges Datum bis sieben Tage im Voraus wählen.', predictions: [] }, { status: 400 });
     }
-
-    // Check if predictor is ready
-    if (!isReady()) {
-        return json({
-            error: 'Predictor not ready yet, still training...',
-            date: null,
-            weekday: null,
-            isHoliday: false,
-            holidayName: null,
-            predictions: [],
-        }, { status: 503 });
-    }
-
-    const result = await predict(targetDate);
-    return json(result);
+    const result = await predict(date);
+    return json(result.data, { status: result.httpStatus, headers: { 'Cache-Control': 'no-store' } });
 };

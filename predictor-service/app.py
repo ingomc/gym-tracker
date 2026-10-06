@@ -1,302 +1,270 @@
-"""
-Gym Utilization Prediction Service using Facebook Prophet.
-Provides ML-based predictions for gym utilization patterns.
-Includes weather data as regressors for improved accuracy.
-"""
-
+"""Non-blocking forecast API. Weather never gates utilization predictions."""
+import json
+import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request
+from contextlib import closing
+from pathlib import Path
 import pandas as pd
-from prophet import Prophet
-import holidays
-import requests
+from flask import Flask, jsonify, request
+from calendar_features import BERLIN, UTC, day_info, day_slots, iso_utc, normalize_readings, opening_hours, parse_date
+from ledger import ForecastLedger
+from models import MODEL_VERSION, calibrate, make_model, horizon_key
+from weather import WEATHER_VERSION, WeatherCache, interval_envelope, train_weather_response
 
-app = Flask(__name__)
-
-# Configuration
+LOGGER = logging.getLogger(__name__)
 DATABASE_PATH = os.environ.get('DATABASE_PATH', '/app/data/gym.db')
-BUNDESLAND = 'BY'  # Bayern for AI-Fitness
-
-# Coburg, Germany coordinates for weather forecast
-WEATHER_LAT = 50.2612
-WEATHER_LON = 10.9628
-
-# Cache for trained model
-model_cache = {
-    'model': None,
-    'last_trained': None,
-    'retrain_interval': timedelta(hours=6)  # Retrain every 6 hours
-}
-
-
-def get_db_connection():
-    """Create a read-only connection to the SQLite database."""
-    conn = sqlite3.connect(f'file:{DATABASE_PATH}?mode=ro', uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+PREDICTION_DATABASE_PATH = os.environ.get('PREDICTION_DATABASE_PATH', '/app/predictions/predictions.db')
 
 
 def load_training_data():
-    """Load historical utilization data with weather from SQLite."""
+    # Main application DB remains read-only; ledger has its own writable volume.
+    with closing(sqlite3.connect(f'file:{DATABASE_PATH}?mode=ro', uri=True)) as connection:
+        columns = {row[1] for row in connection.execute('PRAGMA table_info(utilization_readings)')}
+        selected = ['timestamp', 'percentage'] + [column for column in
+            ('temperature', 'precipitation', 'cloud_cover', 'is_raining') if column in columns]
+        records = pd.read_sql_query(f'SELECT {",".join(selected)} FROM utilization_readings ORDER BY timestamp', connection)
+    return normalize_readings(records)
+
+
+def selected_model(path=None):
+    """Fail closed to the corrected baseline unless the benchmark gate passed."""
+    location = Path(path or os.environ.get('BENCHMARK_SELECTION_PATH', Path(__file__).with_name('selection.json')))
     try:
-        conn = get_db_connection()
-        query = """
-            SELECT timestamp, hour, percentage, temperature, precipitation, cloud_cover, is_raining
-            FROM utilization_readings 
-            ORDER BY timestamp ASC
-        """
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        
-        if df.empty:
-            return None
-            
-        # Convert timestamp to datetime
-        df['ds'] = pd.to_datetime(df['timestamp'], unit='s')
-        df['y'] = df['percentage']
-        
-        # Fill missing weather data with defaults
-        df['temperature'] = df['temperature'].fillna(15.0)
-        df['precipitation'] = df['precipitation'].fillna(0.0)
-        df['cloud_cover'] = df['cloud_cover'].fillna(50.0)
-        df['is_raining'] = df['is_raining'].fillna(0)
-        
-        return df
-    except Exception as e:
-        print(f"Error loading training data: {e}")
-        return None
+        result = json.loads(location.read_text())
+        if (result.get('version') == MODEL_VERSION and result.get('selected') == 'weighted_profile'
+                and result.get('selectionGatePassed') is True
+                and result.get('selectionPolicy') == {
+                    'minimumRelativeImprovement': .05, 'maximumBusyMaeIncrease': .25}):
+            return 'weighted_profile'
+    except (OSError, ValueError, TypeError):
+        pass
+    return 'corrected_prophet'
 
 
-def fetch_weather_forecast(target_date):
-    """Fetch weather forecast from Open-Meteo for a specific date."""
-    try:
-        # Calculate days from today
-        today = datetime.now().date()
-        days_ahead = (target_date - today).days
-        
-        if days_ahead < 0:
-            # Past date - return default weather (we don't have historical weather API)
-            return {'temperature': 15.0, 'precipitation': 0.0, 'cloud_cover': 50, 'is_raining': 0}
-        
-        # Fetch forecast
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={WEATHER_LAT}&longitude={WEATHER_LON}&daily=temperature_2m_mean,precipitation_sum,cloud_cover_mean&forecast_days=8"
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code != 200:
-            return None
-            
-        data = response.json()
-        daily = data.get('daily', {})
-        
-        if days_ahead < len(daily.get('time', [])):
-            return {
-                'temperature': daily['temperature_2m_mean'][days_ahead],
-                'precipitation': daily['precipitation_sum'][days_ahead],
-                'cloud_cover': daily['cloud_cover_mean'][days_ahead],
-                'is_raining': 1 if daily['precipitation_sum'][days_ahead] > 0.5 else 0
-            }
-        return None
-    except Exception as e:
-        print(f"Error fetching weather forecast: {e}")
-        return None
+class ForecastService:
+    def __init__(self, loader=load_training_data, ledger=None, clock=None, weather_cache=None):
+        self.loader = loader
+        self.ledger = ledger or ForecastLedger(PREDICTION_DATABASE_PATH)
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self.weather = weather_cache or WeatherCache(Path(self.ledger.path).with_name('weather-cache.json'), clock=self.clock)
+        self.lock = threading.Lock()
+        self.training = False
+        self.current = None
+        self.last_error = None
+        self.last_trained = None
+        self.last_attempt = None
+        self.started = False
+        self.stop_event = threading.Event()
 
+    def snapshot(self):
+        with self.lock:
+            return self.current
 
-def train_model():
-    """Train Prophet model on historical data with weather regressors."""
-    print("[Predictor] Loading training data...")
-    df = load_training_data()
-    
-    if df is None or len(df) < 50:
-        print(f"[Predictor] Not enough data for training ({len(df) if df is not None else 0} samples)")
-        return None
-    
-    print(f"[Predictor] Training model with {len(df)} samples...")
-    
-    # Weather regressors disabled for now - need more data to work properly
-    # TODO: Re-enable when we have 2+ weeks of weather data
-    has_weather = False  # df['temperature'].notna().sum() > 100
-    
-    # Create and configure Prophet model
-    # Key settings for limited data (only ~1-2 weeks):
-    # - growth='flat': Prevents trend from extrapolating to 0 or negative
-    # - yearly_seasonality=False: We don't have a full year of data
-    # - weekly_seasonality=True: We have enough data for weekly patterns
-    # - daily_seasonality=True: Important for hourly predictions
-    # - seasonality_prior_scale=10: Stronger seasonality signal
-    # - changepoint_prior_scale=0.001: Very rigid trend (almost no changepoints)
-    model = Prophet(
-        growth='flat',  # Flat growth prevents trend extrapolation to 0
-        yearly_seasonality=False,  # Not enough data for yearly patterns
-        weekly_seasonality=True,
-        daily_seasonality=True,
-        seasonality_mode='additive',  # Additive works better for percentages
-        seasonality_prior_scale=10.0,  # Stronger seasonality patterns
-        changepoint_prior_scale=0.001  # Very stable, no sudden changes
-    )
-    
-    # Add German holidays for Bayern
-    model.add_country_holidays(country_name='DE')
-    
-    # Add weather regressors if we have weather data
-    if has_weather:
-        print("[Predictor] Adding weather regressors...")
-        model.add_regressor('temperature')
-        model.add_regressor('precipitation')
-        model.add_regressor('cloud_cover')
-        model.add_regressor('is_raining')
-    
-    # Prepare training dataframe
-    train_df = df[['ds', 'y', 'temperature', 'precipitation', 'cloud_cover', 'is_raining']].copy()
-    
-    # Fit the model
-    model.fit(train_df)
-    
-    model_cache['model'] = model
-    model_cache['last_trained'] = datetime.now()
-    model_cache['has_weather'] = has_weather
-    
-    print("[Predictor] Model training complete!")
-    return model
+    def status(self):
+        with self.lock:
+            return 'ready' if self.current is not None else 'training' if self.training else 'unavailable'
 
-
-def needs_retraining():
-    """Check if model needs to be retrained."""
-    if model_cache['model'] is None or model_cache['last_trained'] is None:
+    def train_async(self):
+        with self.lock:
+            if self.training:
+                return False
+            self.training = True
+            self.last_attempt = pd.Timestamp(self.clock())
+        threading.Thread(target=self._train, name='predictor-training', daemon=True).start()
         return True
-    
-    elapsed = datetime.now() - model_cache['last_trained']
-    return elapsed >= model_cache['retrain_interval']
 
-
-def get_holiday_info(date):
-    """Get holiday information for a date in Bayern."""
-    de_holidays = holidays.Germany(prov=BUNDESLAND, years=date.year)
-    
-    if date in de_holidays:
-        return True, de_holidays.get(date)
-    return False, None
-
-
-def generate_predictions(target_date):
-    """Generate predictions for all 15-min slots on a given date."""
-    # Ensure model is trained
-    if needs_retraining():
-        train_model()
-    
-    model = model_cache['model']
-    if model is None:
-        return None, None
-    
-    # Fetch weather forecast for target date
-    weather = fetch_weather_forecast(target_date)
-    if weather is None:
-        weather = {'temperature': 15.0, 'precipitation': 0.0, 'cloud_cover': 50, 'is_raining': 0}
-    
-    # Create future dataframe for the target date (6:00 to 22:00)
-    predictions = []
-    start_hour = 6
-    end_hour = 22
-    
-    future_times = []
-    for hour in range(start_hour, end_hour):
-        for minute in [0, 15, 30, 45]:
-            dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute)
-            future_times.append(dt)
-    
-    future_df = pd.DataFrame({'ds': future_times})
-    
-    # Add weather regressors if model uses them
-    if model_cache.get('has_weather', False):
-        future_df['temperature'] = weather['temperature']
-        future_df['precipitation'] = weather['precipitation']
-        future_df['cloud_cover'] = weather['cloud_cover']
-        future_df['is_raining'] = weather['is_raining']
-    
-    # Generate predictions
-    forecast = model.predict(future_df)
-    
-    for _, row in forecast.iterrows():
-        dt = row['ds']
-        percentage = max(0, min(100, round(row['yhat'])))
-        predictions.append({
-            'hour': dt.hour,
-            'minute': dt.minute,
-            'percentage': percentage
-        })
-    
-    return predictions, weather
-
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint."""
-    return jsonify({
-        'status': 'healthy',
-        'model_trained': model_cache['model'] is not None,
-        'has_weather_regressors': bool(model_cache.get('has_weather', False)),
-        'last_trained': model_cache['last_trained'].isoformat() if model_cache['last_trained'] else None
-    })
-
-
-@app.route('/predict', methods=['GET'])
-def predict():
-    """Prediction endpoint."""
-    date_param = request.args.get('date')
-    
-    if date_param:
+    def _train(self):
         try:
-            target_date = datetime.strptime(date_param, '%Y-%m-%d').date()
+            cutoff = pd.Timestamp(self.clock())
+            readings = self.loader()
+            # No same-request fitting; every successful model replaces the entire bundle atomically.
+            kind = selected_model()
+            intervals = calibrate(readings, cutoff, kind)
+            model = make_model(kind).fit(readings, cutoff)
+            previous = self.snapshot()
+            previous_weather = previous.get('weatherModel') if previous and previous['kind'] == kind else None
+            bundle = {'model': model, 'calibration': intervals, 'readings': readings,
+                      'trainedThrough': model.trained_through,
+                      'modelVersion': f'{MODEL_VERSION}:{kind}:{WEATHER_VERSION}', 'kind': kind,
+                      'weatherModel': previous_weather}
+            with self.lock:
+                self.current = bundle
+                self.last_trained = cutoff
+                self.last_error = None
+            # The calendar model is ready before optional weather-response fitting.
+            # Neither weather network availability nor this extra fitting blocks requests.
+            try:
+                weather_model = train_weather_response(readings, cutoff, kind)
+                with self.lock:
+                    if self.current is bundle:
+                        self.current = {**bundle, 'weatherModel': weather_model}
+            except Exception:
+                LOGGER.exception('Weather response unavailable; calendar model remains ready')
+        except Exception as error:
+            LOGGER.exception('Forecast training failed; previous successful model retained')
+            with self.lock:
+                self.last_error = str(error)
+        finally:
+            with self.lock:
+                self.training = False
+
+    def start(self):
+        with self.lock:
+            if self.started:
+                return
+            self.started = True
+        self.weather.start()
+        self.train_async()
+        threading.Thread(target=self._maintenance, name='predictor-maintenance', daemon=True).start()
+
+    def future_capture_key(self, now):
+        bundle = self.snapshot() or {}
+        response = bundle.get('weatherModel')
+        with self.weather.lock:
+            fetched = self.weather.fetched_at
+        return (pd.Timestamp(now).tz_convert(BERLIN).date(), fetched,
+                response.trained_through if response is not None and response.coefficients is not None else None,
+                bundle.get('trainedThrough'), bundle.get('modelVersion'))
+
+    def _maintenance(self):
+        # Forecast collection is independent of dashboard traffic, once each quarter-hour.
+        last_capture = None
+        last_future_key = None
+        while not self.stop_event.wait(15):
+            now = pd.Timestamp(self.clock())
+            with self.lock:
+                trained = self.last_trained
+                attempted = self.last_attempt
+            if ((trained is None or now - trained >= pd.Timedelta(days=1))
+                    and (attempted is None or now - attempted >= pd.Timedelta(minutes=5))):
+                self.train_async()
+            capture = int(now.timestamp()) // 900
+            if self.snapshot() is not None and capture != last_capture:
+                try:
+                    today = now.tz_convert(BERLIN).date()
+                    self.predict(today, now)
+                    future_key = self.future_capture_key(now)
+                    if last_future_key != future_key:
+                        for offset in range(1, 8):
+                            self.predict(today + timedelta(days=offset), now)
+                        last_future_key = future_key
+                    last_capture = capture
+                except Exception:
+                    LOGGER.exception('Could not persist scheduled forecast')
+
+    def predict(self, day, issued_at=None):
+        now = pd.Timestamp(issued_at or self.clock())
+        today = now.tz_convert(BERLIN).date()
+        metadata = {'date': day.isoformat(), **day_info(day), 'weather': None,
+                    'openingHours': {'startTime': f'{opening_hours(day)[0]:02d}:00', 'endTime': '22:00'},
+                    'intervalCoverage': .8}
+        stored = self.ledger.for_day(day, now)
+        if day < today:
+            if not stored:
+                return {**metadata, 'status': 'unavailable', 'predictions': [],
+                        'error': 'Für dieses Datum wurde keine Prognose gespeichert.'}, 503
+            latest = max(stored, key=lambda point: point['issuedAt'])
+            return {**metadata, 'status': 'ready', 'source': 'recorded', 'predictions': stored,
+                    'issuedAt': latest['issuedAt'], 'trainedThrough': latest['trainedThrough'],
+                    'modelVersion': latest['modelVersion'], 'intervalCalibration': latest['intervalCalibration'],
+                    'weatherStatus': latest['weatherStatus'], 'intervalStatus': 'calibrated'
+                    if all(point['lower'] is not None for point in stored) else 'insufficient_data'}, 200
+        bundle = self.snapshot()
+        if bundle is None:
+            return {**metadata, 'status': self.status(), 'predictions': [],
+                    'error': 'Das Prognosemodell wird vorbereitet.'}, 503
+        # Recent observations improve only future weighted-profile forecasts; the fitted
+        # profile stays immutable until the daily training completes.
+        recent = bundle['readings']
+        if bundle['kind'] == 'weighted_profile':
+            try:
+                recent = self.loader()
+            except Exception:
+                LOGGER.warning('Recent measurements unavailable; using fitted profile')
+        times = day_slots(day)
+        future = times[times > now]
+        points = bundle['model'].predict(future, now, recent) if len(future) else []
+        new_points = []
+        for target, point in zip(future, points):
+            key = horizon_key(now, target)
+            lower, upper = bundle['calibration'].bounds(point, key)
+            forecast_weather = self.weather.at(target, now)
+            weather_model = bundle.get('weatherModel')
+            supported = (weather_model is not None and weather_model.coefficients is not None
+                         and weather_model.trained_through is not None and weather_model.trained_through < now)
+            adjustment = weather_model.correction(forecast_weather, target, now) if supported else 0.0
+            adjusted = max(0, min(100, float(point) + adjustment))
+            adjustment = adjusted - float(point)
+            active_lower, active_upper = interval_envelope(lower, upper, adjustment)
+            weather_status = 'forecast_unavailable' if forecast_weather is None else 'applied' if supported else 'insufficient_training'
+            new_points.append({'hour': target.hour, 'minute': target.minute,
+                               'percentage': round(adjusted, 2), 'targetAt': iso_utc(target),
+                               'lower': active_lower, 'upper': active_upper, 'status': 'open', 'horizon': key,
+                               'baselinePercentage': round(float(point), 2), 'baselineLower': lower, 'baselineUpper': upper,
+                               'weatherAdjustment': round(adjustment, 2), 'weather': forecast_weather,
+                               'weatherStatus': weather_status, 'intervalCalibration': 'calendar_envelope' if weather_status == 'applied' else 'calendar',
+                               'weatherTrainedThrough': iso_utc(weather_model.trained_through) if supported else None})
+        self.ledger.save(now, bundle['trainedThrough'], bundle['modelVersion'], new_points)
+        # Read back persisted values: repeated requests in a quarter never rewrite history.
+        predictions = self.ledger.for_day(day, now)
+        if not predictions:
+            return {**metadata, 'status': 'unavailable', 'predictions': [],
+                    'error': 'Für diesen Tag liegen noch keine gespeicherten Prognosen vor.'}, 503
+        latest = max(predictions, key=lambda point: point['issuedAt'])
+        return {**metadata, 'status': 'ready', 'source': 'recorded', 'predictions': predictions,
+                'issuedAt': latest['issuedAt'], 'trainedThrough': latest['trainedThrough'],
+                'modelVersion': latest['modelVersion'], 'intervalCalibration': latest['intervalCalibration'],
+                    'weatherStatus': latest['weatherStatus'], 'intervalStatus': 'calibrated'
+                if all(point['lower'] is not None for point in predictions) else 'insufficient_data'}, 200
+
+
+def create_app(service=None, start_background=True):
+    flask_app = Flask(__name__)
+    state = service or ForecastService()
+    flask_app.extensions['forecast_service'] = state
+
+    @flask_app.get('/health')
+    def health():
+        bundle = state.snapshot()
+        return jsonify({'status': state.status(), 'model_trained': bundle is not None,
+                        'training': state.training, 'last_trained': iso_utc(state.last_trained)
+                        if state.last_trained is not None else None,
+                        'modelVersion': bundle['modelVersion'] if bundle else None,
+                        'lastError': state.last_error})
+
+    @flask_app.get('/predict')
+    def predict():
+        today = pd.Timestamp(state.clock()).tz_convert(BERLIN).date()
+        try:
+            day = parse_date(request.args['date']) if 'date' in request.args else today
         except ValueError:
-            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
-    else:
-        target_date = datetime.now().date()
-    
-    # Get holiday info
-    is_holiday, holiday_name = get_holiday_info(target_date)
-    
-    # Generate predictions
-    predictions, weather = generate_predictions(target_date)
-    
-    if predictions is None:
-        return jsonify({
-            'error': 'Model not ready',
-            'date': str(target_date),
-            'weekday': target_date.weekday(),
-            'isHoliday': is_holiday,
-            'holidayName': holiday_name,
-            'weather': None,
-            'predictions': []
-        }), 503
-    
-    return jsonify({
-        'date': str(target_date),
-        'weekday': target_date.weekday(),
-        'isHoliday': is_holiday,
-        'holidayName': holiday_name,
-        'weather': weather,
-        'predictions': predictions
-    })
+            return jsonify({'error': 'Invalid date. Use YYYY-MM-DD.', 'status': 'unavailable'}), 400
+        if day > today + timedelta(days=7):
+            return jsonify({'error': 'Predictions are available up to seven days ahead.', 'status': 'unavailable'}), 400
+        try:
+            result, status = state.predict(day)
+            return jsonify(result), status
+        except Exception:
+            LOGGER.exception('Forecast request failed')
+            return jsonify({'status': 'unavailable', 'date': day.isoformat(), 'predictions': [],
+                            'error': 'Die Prognose ist vorübergehend nicht verfügbar.'}), 503
+
+    @flask_app.post('/train')
+    def train():
+        queued = state.train_async()
+        return jsonify({'status': state.status(), 'training': True, 'queued': queued}), 202
+
+    if start_background:
+        state.start()
+    return flask_app
 
 
-@app.route('/train', methods=['POST'])
-def trigger_train():
-    """Manually trigger model retraining."""
-    model = train_model()
-    if model:
-        return jsonify({
-            'status': 'success', 
-            'message': 'Model trained successfully',
-            'has_weather': model_cache.get('has_weather', False)
-        })
-    return jsonify({'status': 'error', 'message': 'Training failed - not enough data'}), 500
-
+# Gunicorn imports this factory; initialization therefore also happens in production.
+# Tests disable autostart and construct an isolated app with a temporary ledger.
+app = create_app(start_background=os.environ.get('PREDICTOR_AUTOSTART', '1') != '0') if os.environ.get('PREDICTOR_TESTING') != '1' else None
 
 if __name__ == '__main__':
-    # Train model on startup
-    print("[Predictor] Starting prediction service...")
-    train_model()
-    
-    # Run Flask app
     app.run(host='0.0.0.0', port=5000, debug=False)

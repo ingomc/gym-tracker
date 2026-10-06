@@ -1,432 +1,128 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount } from 'svelte';
+    import { studioDateString, addStudioDays } from '$lib/utils/studio-time';
 
-    interface AvailableDate {
-        date: string;
-        count: number;
-    }
-
-    let {
-        selectedDate = null,
-        onSelectDate,
-        onGoToToday,
-    }: {
+    interface AvailableDate { date: string; count: number; }
+    let { selectedDate = null, onSelectDate, onGoToToday }: {
         selectedDate: string | null;
         onSelectDate: (date: string) => void;
         onGoToToday: () => void;
     } = $props();
-
     let availableDates = $state<AvailableDate[]>([]);
-    let availableDatesSet = $state<Set<string>>(new Set());
     let showPicker = $state(false);
-    let calendarMonth = $state(new Date());
-    let displayDate = $state<string | null>(null);
-
-    // Update the set when availableDates changes
-    $effect(() => {
-        availableDatesSet = new Set(availableDates.map((d) => d.date));
-    });
-
-    // Update display date when selectedDate changes
-    $effect(() => {
-        let dateToFormat: Date;
-        if (selectedDate) {
-            const [year, month, day] = selectedDate.split("-").map(Number);
-            dateToFormat = new Date(year, month - 1, day);
-        } else {
-            dateToFormat = new Date();
-        }
-        displayDate = dateToFormat.toLocaleDateString("de-DE", {
-            weekday: "long",
-            day: "numeric",
-            month: "long",
+    let today = $state(studioDateString());
+    let month = $state(studioDateString().slice(0, 7));
+    let container: HTMLDivElement;
+    let trigger: HTMLButtonElement;
+    let dateError = $state(false);
+    let controller: AbortController | null = null;
+    const currentDate = $derived(selectedDate ?? today);
+    const maxDate = $derived(addStudioDays(today, 7));
+    const available = $derived(new Set(availableDates.map((entry) => entry.date)));
+    const dates = $derived([...new Set([...availableDates.map((entry) => entry.date).filter((date) => date < today), ...Array.from({ length: 8 }, (_, index) => addStudioDays(today, index))])].sort());
+    const previous = $derived(dates.filter((date) => date < currentDate).at(-1));
+    const next = $derived(dates.find((date) => date > currentDate));
+    const displayDate = $derived(formatDate(currentDate));
+    const days = $derived.by(() => {
+        const first = new Date(`${month}-01T12:00:00Z`);
+        const offset = (first.getUTCDay() + 6) % 7;
+        const start = addStudioDays(`${month}-01`, -offset);
+        return Array.from({ length: 42 }, (_, index) => {
+            const date = addStudioDays(start, index);
+            return { date, day: Number(date.slice(-2)), inMonth: date.startsWith(month), enabled: available.has(date) || (date >= today && date <= maxDate) };
         });
     });
-
+    function formatDate(date: string) {
+        return new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${date}T12:00:00Z`));
+    }
     async function fetchAvailableDates() {
+        controller?.abort();
+        const active = new AbortController();
+        controller = active;
         try {
-            const response = await fetch("/api/available-dates");
-            if (response.ok) {
-                const result = await response.json();
-                availableDates = result.dates;
-            }
-        } catch (e) {
-            console.error("Failed to fetch available dates", e);
-        }
+            const response = await fetch('/api/available-dates', { signal: active.signal });
+            if (!response.ok) throw new Error('dates');
+            const result = await response.json();
+            if (!active.signal.aborted) { availableDates = result.dates; dateError = false; }
+        } catch { if (!active.signal.aborted) dateError = true; }
     }
-
-    function selectDate(date: string) {
-        showPicker = false;
-        onSelectDate(date);
+    function close() { showPicker = false; }
+    function selectDate(date: string) { showPicker = false; onSelectDate(date); trigger?.focus(); }
+    function open() { month = currentDate.slice(0, 7); showPicker = !showPicker; }
+    function moveMonth(direction: number) {
+        const date = new Date(`${month}-01T12:00:00Z`);
+        date.setUTCMonth(date.getUTCMonth() + direction);
+        month = date.toISOString().slice(0, 7);
     }
-
-    function goToToday() {
-        showPicker = false;
-        calendarMonth = new Date();
-        onGoToToday();
+    function calendarKey(event: KeyboardEvent, date: string) {
+        const offset = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key];
+        if (!offset) return;
+        event.preventDefault();
+        const target = addStudioDays(date, offset);
+        const button = container.querySelector<HTMLButtonElement>(`[data-date="${target}"]`);
+        if (button && !button.disabled) button.focus();
     }
-
-    function prevMonth() {
-        const d = new Date(calendarMonth);
-        d.setMonth(d.getMonth() - 1);
-        calendarMonth = d;
+    export function refresh() { today = studioDateString(); void fetchAvailableDates(); }
+    export function selectLatestArchive() {
+        const latest = availableDates.map((entry) => entry.date).filter((date) => date < today).sort().at(-1);
+        if (latest) selectDate(latest);
+        else { month = addStudioDays(today, -1).slice(0, 7); showPicker = true; }
     }
-
-    function nextMonth() {
-        const d = new Date(calendarMonth);
-        d.setMonth(d.getMonth() + 1);
-        calendarMonth = d;
-    }
-
-    function getCalendarDays(month: Date): {
-        date: string;
-        day: number;
-        isCurrentMonth: boolean;
-        hasData: boolean;
-        isToday: boolean;
-        isSelected: boolean;
-        isFuture: boolean;
-        isClickable: boolean;
-    }[] {
-        const year = month.getFullYear();
-        const m = month.getMonth();
-        const firstDay = new Date(year, m, 1);
-        const lastDay = new Date(year, m + 1, 0);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-
-        // Future dates limit (7 days from today)
-        const maxFutureDate = new Date(today);
-        maxFutureDate.setDate(maxFutureDate.getDate() + 7);
-
-        const days: {
-            date: string;
-            day: number;
-            isCurrentMonth: boolean;
-            hasData: boolean;
-            isToday: boolean;
-            isSelected: boolean;
-            isFuture: boolean;
-            isClickable: boolean;
-        }[] = [];
-
-        // Add days from previous month to fill the first week
-        const startDayOfWeek = (firstDay.getDay() + 6) % 7; // Monday = 0
-        for (let i = startDayOfWeek - 1; i >= 0; i--) {
-            const d = new Date(year, m, -i);
-            const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-            const isFuture = d > today && d <= maxFutureDate;
-            const hasData = availableDatesSet.has(dateStr);
-            days.push({
-                date: dateStr,
-                day: d.getDate(),
-                isCurrentMonth: false,
-                hasData,
-                isToday: dateStr === todayStr,
-                isSelected: dateStr === selectedDate,
-                isFuture,
-                isClickable: hasData || isFuture,
-            });
-        }
-
-        // Add days of current month
-        for (let i = 1; i <= lastDay.getDate(); i++) {
-            const dateStr = `${year}-${String(m + 1).padStart(2, "0")}-${String(i).padStart(2, "0")}`;
-            const d = new Date(year, m, i);
-            const isFuture = d > today && d <= maxFutureDate;
-            const hasData = availableDatesSet.has(dateStr);
-            days.push({
-                date: dateStr,
-                day: i,
-                isCurrentMonth: true,
-                hasData,
-                isToday: dateStr === todayStr,
-                isSelected: dateStr === selectedDate,
-                isFuture,
-                isClickable: hasData || isFuture,
-            });
-        }
-
-        // Add days from next month to complete the grid (fill to 42 days = 6 rows)
-        const remaining = 42 - days.length;
-        for (let i = 1; i <= remaining; i++) {
-            const d = new Date(year, m + 1, i);
-            const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-            const isFuture = d > today && d <= maxFutureDate;
-            const hasData = availableDatesSet.has(dateStr);
-            days.push({
-                date: dateStr,
-                day: i,
-                isCurrentMonth: false,
-                hasData,
-                isToday: dateStr === todayStr,
-                isSelected: dateStr === selectedDate,
-                isFuture,
-                isClickable: hasData || isFuture,
-            });
-        }
-
-        return days;
-    }
-
-    // Check if selected date is today
-    function isToday(): boolean {
-        if (!selectedDate) return true;
-        const today = new Date();
-        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-        return selectedDate === todayStr;
-    }
-
-    export function refresh() {
-        fetchAvailableDates();
-    }
-
-    onMount(() => {
-        fetchAvailableDates();
-    });
+    onMount(() => { void fetchAvailableDates(); return () => controller?.abort(); });
 </script>
 
-<div class="date-picker-container">
-    <button class="date-label-btn" onclick={() => (showPicker = !showPicker)}>
-        {displayDate || "Laden..."}
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-        >
-            <path d="M6 9l6 6 6-6" />
-        </svg>
-    </button>
+<svelte:window onpointerdown={(event) => { if (showPicker && !container?.contains(event.target as Node)) close(); }} onkeydown={(event) => { if (showPicker && event.key === 'Escape') { close(); trigger?.focus(); } }} />
 
+<div class="date-picker" bind:this={container}>
+    <button class="date-step" aria-label="Vorheriger verfügbarer Tag" disabled={!previous} onclick={() => previous && selectDate(previous)}>‹</button>
+    <button class="date-label" bind:this={trigger} onclick={open} aria-expanded={showPicker} aria-controls="date-calendar" aria-label={`Datum wählen: ${displayDate}`}>
+        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="18" height="16" rx="3" /><path d="M3 10h18M8 3v4M16 3v4" /></svg>
+        {displayDate}
+        <span aria-hidden="true" class="chevron">⌄</span>
+    </button>
+    <button class="date-step" aria-label="Nächster verfügbarer Tag" disabled={!next} onclick={() => next && selectDate(next)}>›</button>
     {#if showPicker}
-        <div class="calendar-dropdown">
+        <div id="date-calendar" class="calendar" role="region" aria-label="Datum auswählen">
             <div class="calendar-header">
-                <button class="calendar-nav" onclick={prevMonth}>
-                    <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                    >
-                        <path d="M15 18l-6-6 6-6" />
-                    </svg>
-                </button>
-                <span class="calendar-month">
-                    {calendarMonth.toLocaleDateString("de-DE", {
-                        month: "long",
-                        year: "numeric",
-                    })}
-                </span>
-                <button class="calendar-nav" onclick={nextMonth}>
-                    <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                    >
-                        <path d="M9 18l6-6-6-6" />
-                    </svg>
-                </button>
+                <button aria-label="Vorheriger Monat" onclick={() => moveMonth(-1)}>‹</button>
+                <strong>{new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', month: 'long', year: 'numeric' }).format(new Date(`${month}-01T12:00:00Z`))}</strong>
+                <button aria-label="Nächster Monat" disabled={month >= maxDate.slice(0, 7)} onclick={() => moveMonth(1)}>›</button>
             </div>
-            <div class="calendar-weekdays">
-                <span>Mo</span><span>Di</span><span>Mi</span><span>Do</span
-                ><span>Fr</span><span>Sa</span><span>So</span>
-            </div>
-            <div class="calendar-days">
-                {#each getCalendarDays(calendarMonth) as day}
-                    <button
-                        class="calendar-day"
-                        class:other-month={!day.isCurrentMonth}
-                        class:has-data={day.hasData}
-                        class:is-future={day.isFuture}
-                        class:is-today={day.isToday}
-                        class:is-selected={day.isSelected}
-                        disabled={!day.isClickable}
-                        onclick={() => day.isClickable && selectDate(day.date)}
-                    >
-                        {day.day}
-                    </button>
+            <div class="calendar-grid">
+                {#each ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] as weekday}<span class="weekday">{weekday}</span>{/each}
+                {#each days as day}
+                    <button class:other={!day.inMonth} class:selected={day.date === currentDate} class:today={day.date === today} class:future={day.date > today && day.enabled}
+                        disabled={!day.enabled} data-date={day.date} aria-label={`${formatDate(day.date)}${day.date === today ? ', heute' : day.date > today ? ', Prognose' : ''}`} aria-current={day.date === today ? 'date' : undefined} aria-pressed={day.date === currentDate}
+                        onclick={() => selectDate(day.date)} onkeydown={(event) => calendarKey(event, day.date)}>{day.day}</button>
                 {/each}
             </div>
-            {#if !isToday()}
-                <div class="calendar-footer">
-                    <button class="today-btn" onclick={goToToday}
-                        >Zurück zu Heute</button
-                    >
-                </div>
-            {/if}
+            {#if dateError}<p class="calendar-error">Archivdaten konnten nicht geladen werden.</p><button class="retry" onclick={fetchAvailableDates}>Erneut laden</button>{/if}
+            <button class="today-button" onclick={() => { close(); today = studioDateString(); onGoToToday(); trigger?.focus(); }}>Zurück zu heute</button>
         </div>
     {/if}
 </div>
 
 <style>
-    .date-picker-container {
-        position: relative;
-    }
-
-    .date-label-btn {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-size: 0.875rem;
-        color: var(--text-secondary);
-        background: transparent;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 0.375rem 0.75rem;
-        border-radius: 0.5rem;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-
-    .date-label-btn:hover {
-        background: rgba(255, 255, 255, 0.05);
-        border-color: rgba(255, 255, 255, 0.2);
-        color: var(--text-primary, #fff);
-    }
-
-    .calendar-dropdown {
-        position: absolute;
-        top: calc(100% + 0.5rem);
-        right: 0;
-        background: var(--card-bg, #1a1a2e);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 0.75rem;
-        padding: 0.75rem;
-        z-index: 100;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
-        min-width: 280px;
-    }
-
-    .calendar-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.75rem;
-    }
-
-    .calendar-nav {
-        background: transparent;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        color: var(--text-secondary);
-        width: 28px;
-        height: 28px;
-        border-radius: 0.375rem;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s;
-    }
-
-    .calendar-nav:hover {
-        background: rgba(255, 255, 255, 0.05);
-        color: var(--text-primary, #fff);
-    }
-
-    .calendar-month {
-        font-size: 0.875rem;
-        font-weight: 500;
-        color: var(--text-primary, #fff);
-        text-transform: capitalize;
-    }
-
-    .calendar-weekdays {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 2px;
-        margin-bottom: 0.5rem;
-    }
-
-    .calendar-weekdays span {
-        text-align: center;
-        font-size: 0.7rem;
-        color: var(--text-secondary);
-        padding: 0.25rem;
-    }
-
-    .calendar-days {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 2px;
-    }
-
-    .calendar-day {
-        aspect-ratio: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: transparent;
-        border: none;
-        border-radius: 0.375rem;
-        font-size: 0.8rem;
-        color: var(--text-primary, #fff);
-        cursor: pointer;
-        transition: all 0.15s;
-    }
-
-    .calendar-day:disabled {
-        color: rgba(255, 255, 255, 0.2);
-        cursor: not-allowed;
-    }
-
-    .calendar-day.other-month {
-        color: rgba(255, 255, 255, 0.3);
-    }
-
-    .calendar-day.has-data:not(:disabled) {
-        background: rgba(99, 102, 241, 0.15);
-        font-weight: 500;
-    }
-
-    .calendar-day.has-data:not(:disabled):hover {
-        background: rgba(99, 102, 241, 0.3);
-    }
-
-    .calendar-day.is-future:not(:disabled) {
-        background: rgba(34, 197, 94, 0.15);
-        font-weight: 500;
-    }
-
-    .calendar-day.is-future:not(:disabled):hover {
-        background: rgba(34, 197, 94, 0.3);
-    }
-
-    .calendar-day.is-today {
-        border: 1px solid var(--accent-color, #6366f1);
-    }
-
-    .calendar-day.is-selected {
-        background: var(--accent-color, #6366f1) !important;
-        color: white;
-    }
-
-    .calendar-footer {
-        margin-top: 0.75rem;
-        padding-top: 0.75rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
-        text-align: center;
-    }
-
-    .today-btn {
-        background: var(--accent-color, #6366f1);
-        color: white;
-        border: none;
-        padding: 0.375rem 0.75rem;
-        border-radius: 0.375rem;
-        font-size: 0.75rem;
-        cursor: pointer;
-        transition: opacity 0.2s;
-    }
-
-    .today-btn:hover {
-        opacity: 0.8;
-    }
+    .date-picker { display: flex; align-items: center; position: relative; border: 1px solid var(--border-color); border-radius: 6px; }
+    .date-picker button { background: none; border: none; color: var(--text-primary); }
+    .date-step { width: 32px; min-height: 32px; font-size: 1.2rem; }
+    .date-step:hover:not(:disabled), .date-label:hover { background: var(--bg-tertiary); }
+    .date-step:disabled { opacity: .25; }
+    .date-label { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; font-size: .72rem; padding: 0 8px; }
+    .date-label svg, .chevron { color: var(--text-secondary); }
+    .calendar { position: absolute; z-index: 50; top: calc(100% + 7px); right: 0; width: 290px; padding: 12px; border: 1px solid #414854; border-radius: 9px; box-shadow: var(--shadow-lg); background: #20242d; }
+    .calendar-header { display: flex; align-items: center; justify-content: space-between; font-size: .82rem; margin-bottom: 10px; }
+    .calendar-header button { min-width: 34px; min-height: 34px; font-size: 1.25rem; }
+    .calendar-header button:disabled { opacity: .2; }
+    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+    .weekday { text-align: center; color: var(--text-secondary); font-size: .7rem; margin-bottom: 6px; }
+    .calendar-grid button { height: 34px; border-radius: 7px; font-size: .78rem; }
+    .calendar-grid button:hover:not(:disabled) { background: #353d4b; }
+    .calendar-grid button.future { color: #c2c9d6; }
+    .calendar-grid button.today { outline: 1px solid #a5adbd80; outline-offset: -2px; }
+    .calendar-grid button.selected { background: #d5d9e2; color: #161920; font-weight: 700; }
+    .calendar-grid button:disabled { opacity: .23; } .calendar-grid button.other { opacity: .4; }
+    .calendar-error { color: var(--warning); font-size: .65rem; margin: 10px 0; } .retry { font-size: .7rem; text-decoration: underline; }
+    .date-picker .today-button { border-top: 1px solid var(--border-color); color: var(--text-primary); width: 100%; padding: 9px 0 0; margin-top: 10px; font-size: .74rem; }
+    @media (max-width: 700px) { .date-label { flex: 1; } .date-picker { width: 100%; } .calendar { right: 0; width: min(290px, calc(100vw - 46px)); } }
 </style>

@@ -18,6 +18,7 @@ services:
       - HOST_HEADER=x-forwarded-host
       - TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
       - PREDICTOR_URL=http://predictor:5000
+      - BODY_SIZE_LIMIT=16777216
     depends_on:
       - predictor
     labels:
@@ -32,13 +33,17 @@ services:
     restart: unless-stopped
     volumes:
       - gym-data:/app/data:ro
+      - gym-predictions:/app/predictions
     environment:
       - TZ=Europe/Berlin
       - DATABASE_PATH=/app/data/gym.db
+      - PREDICTION_DATABASE_PATH=/app/predictions/predictions.db
     networks:
       - dokploy-network
 
 volumes:
+  gym-predictions:
+    driver: local
   gym-data:
     driver: local
 

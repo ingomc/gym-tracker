@@ -7,7 +7,6 @@ node_modules
 .wrangler
 /.svelte-kit
 /build
-/predictor-service
 
 # OS
 .DS_Store
@@ -28,6 +27,14 @@ data/
 *.db
 *.db-shm
 *.db-wal
+*.db.before-timestamp-unique-*.bak
 
 # Drizzle migrations (if using)
 drizzle/
+
+# Private exports, analysis results and local Python environment
+/Archiv/
+/gym-tracker-export-*.json
+/.venv/
+__pycache__/
+*.pyc

@@ -1,4 +1,6 @@
 import { db, schema } from './db';
+import { getPollIntervalMinutes, getUtilizationStatus, type UtilizationSourceSnapshot } from './utilization-status';
+import { studioDateString, studioParts } from '../utils/studio-time';
 
 const API_URL = process.env.API_URL || 'https://www.ai-fitness.de/connect/v1/studio/1412625590/utilization';
 
@@ -21,6 +23,12 @@ interface UtilizationResponse {
     startTime: string;
     endTime: string;
     items: UtilizationItem[];
+}
+
+let sourceSnapshot: UtilizationSourceSnapshot | null = null;
+
+export function getUtilizationSourceSnapshot(): UtilizationSourceSnapshot | null {
+    return sourceSnapshot;
 }
 
 interface WeatherData {
@@ -57,6 +65,7 @@ interface SchoolHoliday {
 // Source: https://www.gesetze-bayern.de (Bekanntmachung vom 7. Dezember 2022)
 const BAYERN_SCHOOL_HOLIDAYS: SchoolHoliday[] = [
     // 2025/2026 (ab Januar 2026)
+    { start: '2025-12-22', end: '2026-01-05', name: 'Weihnachtsferien' },
     { start: '2026-02-16', end: '2026-02-20', name: 'Frühjahrsferien' },
     { start: '2026-03-30', end: '2026-04-10', name: 'Osterferien' },
     { start: '2026-05-26', end: '2026-06-05', name: 'Pfingstferien' },
@@ -91,7 +100,7 @@ function getSchoolHolidays(): SchoolHoliday[] {
 }
 
 function checkSchoolHoliday(holidays: SchoolHoliday[], date: Date): { isHoliday: boolean; name: string | null } {
-    const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
+    const dateStr = studioDateString(date);
 
     for (const holiday of holidays) {
         const start = holiday.start.split('T')[0];
@@ -107,17 +116,13 @@ function checkSchoolHoliday(holidays: SchoolHoliday[], date: Date): { isHoliday:
 
 function formatTime(isoString: string | undefined): string | null {
     if (!isoString) return null;
-    try {
-        const date = new Date(isoString);
-        return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
-    } catch {
-        return null;
-    }
+    // Open-Meteo supplies studio-local times because timezone=Europe/Berlin.
+    return /T(\d{2}:\d{2})/.exec(isoString)?.[1] ?? null;
 }
 
 async function fetchWeather(): Promise<WeatherData | null> {
     try {
-        const response = await fetch(WEATHER_API_URL);
+        const response = await fetch(WEATHER_API_URL, { signal: AbortSignal.timeout(3000) });
         if (!response.ok) {
             console.error(`[Weather] API responded with status ${response.status}`);
             return null;
@@ -140,30 +145,60 @@ async function fetchWeather(): Promise<WeatherData | null> {
     }
 }
 
-export async function fetchAndStoreUtilization(): Promise<{ success: boolean; percentage?: number; error?: string }> {
+type FetchResult = { success: boolean; percentage?: number; error?: string };
+let activeFetch: Promise<FetchResult> | null = null;
+
+export function fetchAndStoreUtilization(): Promise<FetchResult> {
+    // Startup, scheduled ticks and manual callers share a single pending poll.
+    if (!activeFetch) {
+        activeFetch = performFetch().finally(() => { activeFetch = null; });
+    }
+    return activeFetch;
+}
+
+async function performFetch(): Promise<FetchResult> {
     try {
-        // Get holidays (static data) and fetch utilization + weather in parallel
         const holidays = getSchoolHolidays();
-        const [utilizationResponse, weather] = await Promise.all([
-            fetch(API_URL),
-            fetchWeather(),
-        ]);
+        const weatherPromise = fetchWeather();
+        const utilizationResponse = await fetch(API_URL, { signal: AbortSignal.timeout(8000) });
 
         if (!utilizationResponse.ok) {
             throw new Error(`API responded with status ${utilizationResponse.status}`);
         }
 
         const data: UtilizationResponse = await utilizationResponse.json();
+        // Timestamp the source observation before waiting for optional weather.
+        const now = new Date();
+        if (!Array.isArray(data.items)) throw new Error('Invalid utilization response');
 
         // Find the current slot
-        const currentSlot = data.items.find(item => item.isCurrent);
+        const currentSlot = data.items.find(item => item.isCurrent === true);
+        sourceSnapshot = {
+            checkedAt: now,
+            status: currentSlot ? 'current' : 'missing',
+            openingHours: { startTime: data.startTime, endTime: data.endTime },
+        };
+        const status = getUtilizationStatus({
+            now,
+            lastUpdated: null,
+            source: sourceSnapshot,
+            pollIntervalMinutes: getPollIntervalMinutes(),
+        });
+        if (status === 'closed') {
+            // Closure is display state, not a measured zero for historical charts.
+            return { success: true };
+        }
         if (!currentSlot) {
+            console.warn(`[${now.toISOString()}] No current slot found during opening hours`);
             return { success: false, error: 'No current slot found in API response' };
         }
 
-        const now = new Date();
-        const weekday = now.getDay(); // 0=Sunday, 1=Monday, ...
-        const hour = now.getHours();
+        if (!Number.isFinite(currentSlot.percentage) || currentSlot.percentage < 0
+            || currentSlot.percentage > 100 || !['LOW', 'MEDIUM', 'HIGH'].includes(currentSlot.level)) {
+            throw new Error('Invalid current utilization measurement');
+        }
+        const { weekday, hour } = studioParts(now);
+        const weather = await weatherPromise;
 
         // Check school holidays
         const schoolHoliday = checkSchoolHoliday(holidays, now);
@@ -197,6 +232,12 @@ export async function fetchAndStoreUtilization(): Promise<{ success: boolean; pe
 
         return { success: true, percentage: currentSlot.percentage };
     } catch (error) {
+        sourceSnapshot = {
+            checkedAt: new Date(),
+            status: 'error',
+            openingHours: sourceSnapshot?.openingHours,
+            openingHoursCheckedAt: sourceSnapshot?.openingHoursCheckedAt ?? sourceSnapshot?.checkedAt,
+        };
         const message = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[${new Date().toISOString()}] Failed to fetch utilization: ${message}`);
         return { success: false, error: message };

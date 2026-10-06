@@ -29,3 +29,12 @@ data/
 
 # Drizzle
 drizzle/
+
+# Private local analysis is never part of an image
+Archiv/
+gym-tracker-export-*.json
+.venv/
+__pycache__/
+*.pyc
+.git/
+*.db.before-timestamp-unique-*.bak

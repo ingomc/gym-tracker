@@ -1,0 +1,9 @@
+{
+  "version": "berlin-quarter-hour-v2",
+  "selected": "corrected_prophet",
+  "selectionGatePassed": false,
+  "selectionPolicy": {
+    "minimumRelativeImprovement": 0.05,
+    "maximumBusyMaeIncrease": 0.25
+  }
+}

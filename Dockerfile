@@ -31,6 +31,7 @@ RUN mkdir -p /app/data
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/app/data/gym.db
 ENV PORT=3000
+ENV BODY_SIZE_LIMIT=16777216
 
 EXPOSE 3000
 

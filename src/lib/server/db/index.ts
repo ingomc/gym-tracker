@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { ensureUniqueReadingTimestamps } from './migrations';
 
 const DB_PATH = process.env.DATABASE_PATH || './data/gym.db';
 
@@ -58,6 +59,8 @@ addColumnIfNotExists('utilization_readings', 'sunset', 'TEXT');
 // School holiday columns (new)
 addColumnIfNotExists('utilization_readings', 'is_school_holiday', 'INTEGER');
 addColumnIfNotExists('utilization_readings', 'holiday_name', 'TEXT');
+
+ensureUniqueReadingTimestamps(sqlite, DB_PATH);
 
 export const db = drizzle(sqlite, { schema });
 
