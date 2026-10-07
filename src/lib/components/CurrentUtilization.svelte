@@ -1,8 +1,9 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { getUtilizationColor } from '$lib/utils/colors';
+    import { analytics } from '$lib/utils/analytics';
 
-    interface WeatherData { temperature: number; precipitation: number; cloudCover: number; isRaining: boolean; }
+    interface WeatherData { temperature: number; precipitation: number | null; cloudCover: number | null; isRaining: boolean | null; }
     interface CurrentData {
         status: 'live' | 'closed' | 'stale' | 'unavailable';
         percentage: number | null;
@@ -18,6 +19,9 @@
     let now = $state(Date.now());
     let controller: AbortController | null = null;
     let sequence = 0;
+    let showWeather = $state(false);
+    let weatherControl: HTMLDivElement;
+    let weatherButton: HTMLButtonElement;
 
     const statusText = $derived(failed ? 'Abruf fehlgeschlagen' : data?.status === 'unavailable' ? 'Keine aktuelle Messung' : data?.status === 'stale'
         ? 'Veralteter Messwert' : data?.status === 'closed' ? 'Geschlossen' : data?.status === 'live' ? 'Geöffnet' : 'Wird geladen …');
@@ -25,8 +29,29 @@
     const ageText = $derived(age === null ? 'Noch keine Messung' : age < 1 ? 'gerade eben' : age < 60 ? `vor ${age} Min.` : age < 1440 ? `vor ${Math.floor(age / 60)} Std. ${age % 60} Min.` : `vor ${Math.floor(age / 1440)} Tagen`);
     const percentage = $derived(failed || data?.status === 'unavailable' ? null : data?.percentage ?? null);
     const color = $derived(data?.status === 'live' && !failed ? getUtilizationColor(percentage) : 'var(--text-secondary)');
+    const weather = $derived(!failed && data?.weather && Number.isFinite(data.weather.temperature) ? data.weather : null);
     function formatTime(timestamp: string | null) {
         return timestamp ? new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp)) : '';
+    }
+    function weatherIcon(value: WeatherData) {
+        if (value.isRaining) return '🌧️';
+        if (value.cloudCover === null) return '🌡️';
+        if (value.cloudCover > 70) return '☁️';
+        return value.cloudCover > 30 ? '⛅' : '☀️';
+    }
+    function toggleWeather() {
+        if (!showWeather) analytics.weatherView();
+        showWeather = !showWeather;
+    }
+    function closeWeather() {
+        showWeather = false;
+        weatherButton?.focus();
+    }
+    function outsideWeather(event: PointerEvent) {
+        if (showWeather && event.target instanceof Node && !weatherControl?.contains(event.target)) showWeather = false;
+    }
+    function weatherKey(event: KeyboardEvent) {
+        if (showWeather && event.key === 'Escape') { event.preventDefault(); closeWeather(); }
     }
     async function fetchData() {
         const request = ++sequence;
@@ -54,7 +79,10 @@
         return () => { clearInterval(interval); ++sequence; controller?.abort(); };
     });
     $effect(() => { if (refreshTrigger) void fetchData(); });
+    $effect(() => { if (!weather) showWeather = false; });
 </script>
+
+<svelte:window onpointerdown={outsideWeather} onkeydown={weatherKey} />
 
 <section class="card current-card" aria-label="Aktuelle Studio-Auslastung" aria-busy={loading}>
     <div class="current-value" style={`color: ${color}`}>
@@ -65,10 +93,27 @@
         <time datetime={data?.lastUpdated ?? undefined} title={formatTime(data?.lastUpdated ?? null)}>{data?.lastUpdated ? `Messung ${ageText}` : 'Noch keine Messung'}</time>
         {#if failed}<button class="retry" onclick={fetchData}>Erneut versuchen</button>{/if}
     </div>
+    {#if weather}
+        <div class="weather-control" bind:this={weatherControl}>
+            <button class="weather-button" bind:this={weatherButton} onclick={toggleWeather} aria-label="Wetter anzeigen" aria-expanded={showWeather} aria-controls="current-weather" title="Wetter anzeigen">{weatherIcon(weather)}</button>
+            {#if showWeather}
+                <div id="current-weather" class="weather-popover" role="region" aria-label="Wetterdetails">
+                    <div class="popover-header"><strong>Wetter</strong><button class="close-button" onclick={closeWeather} aria-label="Wetter schließen">×</button></div>
+                    <dl>
+                        <div><dt>🌡️ Temperatur</dt><dd>{weather.temperature.toLocaleString('de-DE', { maximumFractionDigits: 1 })} °C</dd></div>
+                        <div><dt>💧 Niederschlag</dt><dd>{weather.precipitation === null ? '–' : `${weather.precipitation.toLocaleString('de-DE', { maximumFractionDigits: 1 })} mm`}</dd></div>
+                        <div><dt>☁️ Bewölkung</dt><dd>{weather.cloudCover === null ? '–' : `${weather.cloudCover} %`}</dd></div>
+                        <div><dt>🌧️ Regen</dt><dd>{weather.isRaining === null ? '–' : weather.isRaining ? 'Ja' : 'Nein'}</dd></div>
+                    </dl>
+                    <div class="popover-footer">Messung {formatTime(data?.lastUpdated ?? null)} Uhr · Coburg</div>
+                </div>
+            {/if}
+        </div>
+    {/if}
 </section>
 
 <style>
-    .current-card { display: flex; align-items: center; gap: 18px; padding: 14px 20px; }
+    .current-card { position: relative; display: flex; align-items: center; gap: 18px; padding: 14px 20px; }
     .current-value { flex-shrink: 0; }
     .percentage { font-size: 3rem; font-weight: 650; line-height: 1; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
     .percent-sign { font-size: 1.35rem; margin-left: 3px; font-weight: 500; }
@@ -78,11 +123,24 @@
     .status { color: var(--text-secondary); font-size: .75rem; }
     .status.live::before { content: ''; display: inline-block; width: 5px; height: 5px; background: #22c55e; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
     time { color: var(--text-secondary); font-size: .68rem; }
+    .weather-control { margin-left: auto; flex-shrink: 0; }
+    .weather-button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--border-color); border-radius: 9px; background: transparent; font-size: 1.25rem; cursor: pointer; }
+    .weather-button:hover, .close-button:hover { background: var(--bg-tertiary); }
+    .weather-button:focus-visible, .close-button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 3px; }
+    .weather-popover { position: absolute; top: calc(100% + 6px); right: 0; width: min(238px, calc(100% - 8px)); z-index: 100; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 8px 24px #0006; }
+    .weather-popover::before { content: ''; position: absolute; top: -5px; right: 32px; width: 8px; height: 8px; transform: rotate(45deg); background: var(--bg-secondary); border-top: 1px solid var(--border-color); border-left: 1px solid var(--border-color); }
+    .popover-header { display: flex; align-items: center; justify-content: space-between; font-size: .8rem; margin-bottom: 7px; }
+    .close-button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: 5px; background: transparent; color: var(--text-secondary); font-size: 1.2rem; cursor: pointer; }
+    dl { margin: 0; font-size: .75rem; }
+    dl div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+    dt { color: var(--text-secondary); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+    .popover-footer { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border-color); color: var(--text-secondary); font-size: .6rem; }
     .retry { color: var(--accent-primary); background: none; border: none; padding: 0; text-align: left; font-size: .7rem; }
     @media (max-width: 700px) {
         .current-card { gap: 14px; padding: 12px 14px; }
         .percentage { font-size: 2.8rem; } .percent-sign { font-size: 1.25rem; }
         .current-info { gap: 4px; } .current-title { gap: 8px; }
         h1 { font-size: .85rem; } .status { font-size: .7rem; } time { font-size: .64rem; }
+        .weather-popover::before { right: 26px; }
     }
 </style>

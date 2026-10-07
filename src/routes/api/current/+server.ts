@@ -25,11 +25,12 @@ export const GET: RequestHandler = async () => {
         percentage: status === 'closed' ? 0 : status === 'unavailable' ? null : reading?.percentage ?? null,
         level: status === 'closed' || status === 'unavailable' ? null : reading?.level ?? null,
         lastUpdated: reading?.timestamp.toISOString() ?? null,
-        weather: status === 'live' && reading && reading.temperature !== null ? {
+        // The weather popover shows the measurement time, including for older readings.
+        weather: reading && reading.temperature !== null ? {
             temperature: reading.temperature,
             precipitation: reading.precipitation,
             cloudCover: reading.cloudCover,
-            isRaining: reading.isRaining === 1,
+            isRaining: reading.isRaining === null ? null : reading.isRaining === 1,
         } : null,
     }, { headers: { 'Cache-Control': 'no-store' } });
 };
