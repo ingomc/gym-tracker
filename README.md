@@ -89,3 +89,7 @@ npm run build
 ```
 
 Browserabnahme: Kalender vor der ersten heutigen Messung, schnelle Datumswechsel, automatische Aktualisierung, gemeinsame Diagramm-Details, fehlende Prognosen/Fehlerzustände, Heatmap mit Maus/Pfeiltasten/Escape und schmale Smartphone-Ansicht. Die Admin-Anmeldung ist außerhalb dieser Überarbeitung.
+
+## Laufzeit und Sicherheitsupdates
+
+Node.js 22.23.4 ist in `.nvmrc` und den Docker-Stufen festgelegt (Brotli-Fix für CVE-2026-111497). Lokal `nvm install` und `nvm use` ausführen. Bei einem Deployment das Basisimage neu ziehen, das Image neu bauen und die laufende Instanz ersetzen; vorhandene Datenvolumes erhalten. Anschließend `node --version` im laufenden Container prüfen.
