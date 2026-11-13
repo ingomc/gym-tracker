@@ -12,10 +12,7 @@ const { outputText: timeCode } = ts.transpileModule(readFileSync(new URL('../src
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 });
 const timeHelpers = await import(`data:text/javascript;base64,${Buffer.from(timeCode).toString('base64')}`);
-// studio-hours.ts only needs parseHoursRange here; its DB sync is replaced per test.
-const { outputText: hoursCode } = ts.transpileModule(readFileSync(new URL('../src/lib/server/studio-hours.ts', import.meta.url), 'utf8')
-    .replace(/^import .*$/gm, ''), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
-const hoursHelpers = await import(`data:text/javascript;base64,${Buffer.from(hoursCode).toString('base64')}`);
+// studio-hours.ts needs the database; its sync is recorded per test instead.
 const fetcherSource = readFileSync(new URL('../src/lib/server/fetcher.ts', import.meta.url), 'utf8');
 const { outputText: fetcherCode } = ts.transpileModule(fetcherSource, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -27,7 +24,8 @@ function loadFetcher(now, utilization, options = {}) {
     let sourceFails = false;
     let currentTime = now;
     const requests = [];
-    const apiUrl = 'https://fixture.invalid/api/studios/coburg.json';
+    const apiUrl = 'https://fixture.invalid/utilization';
+    const studioUrl = 'https://fixture.invalid/studio.json';
     const exports = {};
     class FixedDate extends Date {
         constructor(value = currentTime) { super(value); }
@@ -37,14 +35,15 @@ function loadFetcher(now, utilization, options = {}) {
         './db': { db: { insert: () => ({ values: async row => { rows.push(row); } }) }, schema: { utilizationReadings: {} } },
         './utilization-status': statusHelpers,
         '../utils/studio-time': timeHelpers,
-        './studio-hours': {
-            parseHoursRange: hoursHelpers.parseHoursRange,
-            syncHolidayHours: (raw, today) => { syncedHours.push({ raw, today }); },
-        },
+        './studio-hours': { syncHolidayHours: (raw, today) => { syncedHours.push({ raw, today }); } },
     };
     const fixtureFetch = async (url, init) => {
         requests.push({ url, signal: init?.signal });
         if (url === apiUrl && sourceFails) throw new Error('Source unavailable');
+        if (url === studioUrl) {
+            if (options.studioFails) throw new Error('Studio info unavailable');
+            return new Response(JSON.stringify(options.studio ?? { holidayHours: {}, status: { occupancyPercent: 99 } }));
+        }
         if (url !== apiUrl && options.weatherFails) throw new Error('Weather timeout');
         if (url !== apiUrl && options.weatherGate) await options.weatherGate;
         const data = url === apiUrl ? utilization : {
@@ -59,22 +58,16 @@ function loadFetcher(now, utilization, options = {}) {
             return dependencies[name];
         },
         exports, fixtureFetch, FixedDate,
-        { env: { API_URL: apiUrl, POLL_INTERVAL_MINUTES: '15' } },
+        { env: { API_URL: apiUrl, STUDIO_INFO_URL: studioUrl, POLL_INTERVAL_MINUTES: '15' } },
         { log() {}, warn() {}, error() {} },
     );
     return { ...exports, rows, syncedHours, requests, failSource() { sourceFails = true; }, setTime(value) { currentTime = value; } };
 }
 
-const weekly = {
-    monday: '06:00-22:00', tuesday: '06:00-22:00', wednesday: '06:00-22:00', thursday: '06:00-22:00',
-    friday: '06:00-22:00', saturday: '07:00-22:00', sunday: '07:00-22:00',
-};
-
-// Shape of https://api.ai-fitness.de/api/studios/coburg.json; `current: false` means no live status.
-function source(percentage, current, holidayHours = {}) {
+function source(percentage, isCurrent) {
     return {
-        id: '1412625590', slug: 'coburg', openingHours: weekly, holidayHours,
-        status: current ? { isOpen: true, currentOccupancy: 'low', occupancyPercent: percentage } : null,
+        startTime: '06:00:00', endTime: '22:00:00',
+        items: [{ startTime: '21:00:00', endTime: '22:00:00', percentage, level: 'LOW', isCurrent }],
     };
 }
 
@@ -106,7 +99,7 @@ test('a missing slot during opening hours is unavailable and does not create a m
 
 test('a source outage keeps previously confirmed early weekend hours and labels the saved reading stale', async () => {
     const now = new Date('2026-10-10T06:30:00+02:00');
-    const fetcher = loadFetcher(now.toISOString(), source(17, true, { '2026-10-10': '06:00-22:00' }));
+    const fetcher = loadFetcher(now.toISOString(), source(17, true));
     assert.equal((await fetcher.fetchAndStoreUtilization()).success, true);
     fetcher.failSource();
     assert.equal((await fetcher.fetchAndStoreUtilization()).success, false);
@@ -123,7 +116,7 @@ test('overlapping startup and scheduled polls share one observation', async () =
     assert.equal(first, second);
     await Promise.all([first, second]);
     assert.equal(fetcher.rows.length, 1);
-    assert.equal(fetcher.requests.filter(request => request.url.includes('fixture.invalid')).length, 1);
+    assert.equal(fetcher.requests.filter(request => request.url.endsWith('/utilization')).length, 1);
     assert.ok(fetcher.requests.every(request => request.signal instanceof AbortSignal));
 });
 
@@ -148,43 +141,22 @@ test('delayed weather cannot move a measurement into a later hour', async () => 
     assert.equal(fetcher.rows[0].hour, 12);
 });
 
-test('the uppercase level from the new studio payload is stored', async () => {
-    const payload = source(55, true);
-    payload.status.currentOccupancy = 'medium';
-    const fetcher = loadFetcher('2026-10-07T12:00:00+02:00', payload);
-    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true, percentage: 55 });
-    assert.equal(fetcher.rows[0].level, 'MEDIUM');
-});
-
-test('a studio reporting isOpen=false does not create a measurement', async () => {
-    const payload = source(12, true);
-    payload.status.isOpen = false;
-    const fetcher = loadFetcher('2026-10-07T12:00:00+02:00', payload);
-    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true });
-    assert.deepEqual(fetcher.rows, []);
-});
-
-test('holiday hours override the weekly schedule', async () => {
-    const now = new Date('2026-12-24T14:00:00+01:00');
-    const fetcher = loadFetcher(now.toISOString(), source(30, true, { '2026-12-24': '07:00-13:00' }));
-    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true });
-    assert.deepEqual(fetcher.rows, []);
-    assert.deepEqual(fetcher.getUtilizationSourceSnapshot().openingHours, { startTime: '07:00:00', endTime: '13:00:00' });
-    assert.equal(statusHelpers.getUtilizationStatus({
-        now, lastUpdated: null, source: fetcher.getUtilizationSourceSnapshot(), pollIntervalMinutes: 15,
-    }), 'closed');
-});
-
-test('published special hours are handed to the studio-hours sync with the studio date', async () => {
-    const fetcher = loadFetcher('2026-12-23T23:30:00Z', source(30, true, { '2026-12-24': '07:00-13:00' }));
+test('special opening hours are refreshed at most hourly and never replace the live measurement', async () => {
+    const studio = { holidayHours: { '2026-12-24': '07:00-13:00' }, status: { occupancyPercent: 99 } };
+    const fetcher = loadFetcher('2026-10-07T12:00:00+02:00', source(17, true), { studio });
+    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true, percentage: 17 });
+    assert.deepEqual(fetcher.syncedHours, [{ raw: studio.holidayHours, today: '2026-10-07' }]);
+    fetcher.setTime('2026-10-07T12:15:00+02:00');
     await fetcher.fetchAndStoreUtilization();
-    assert.deepEqual(fetcher.syncedHours, [{ raw: { '2026-12-24': '07:00-13:00' }, today: '2026-12-24' }]);
+    fetcher.setTime('2026-10-07T13:01:00+02:00');
+    await fetcher.fetchAndStoreUtilization();
+    assert.equal(fetcher.syncedHours.length, 2);
+    assert.equal(fetcher.requests.filter(request => request.url.endsWith('studio.json')).length, 2);
+    assert.deepEqual(fetcher.rows.map(row => row.percentage), [17, 17, 17]);
 });
 
-test('hour ranges parse strictly', () => {
-    assert.deepEqual(hoursHelpers.parseHoursRange('07:00-13:00'), { startTime: '07:00:00', endTime: '13:00:00' });
-    assert.deepEqual(hoursHelpers.parseHoursRange(' 10:30 - 24:00 '), { startTime: '10:30:00', endTime: '24:00:00' });
-    for (const value of ['geschlossen', '13:00-07:00', '7:00-13:00', null, 5]) {
-        assert.equal(hoursHelpers.parseHoursRange(value), undefined);
-    }
+test('an unavailable studio info source does not affect measurements', async () => {
+    const fetcher = loadFetcher('2026-10-07T12:00:00+02:00', source(21, true), { studioFails: true });
+    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true, percentage: 21 });
+    assert.deepEqual(fetcher.syncedHours, []);
 });
