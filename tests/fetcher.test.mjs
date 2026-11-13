@@ -22,7 +22,7 @@ function loadFetcher(now, utilization, options = {}) {
     let sourceFails = false;
     let currentTime = now;
     const requests = [];
-    const apiUrl = 'https://fixture.invalid/utilization';
+    const apiUrl = 'https://fixture.invalid/api/studios/coburg.json';
     const exports = {};
     class FixedDate extends Date {
         constructor(value = currentTime) { super(value); }
@@ -56,10 +56,16 @@ function loadFetcher(now, utilization, options = {}) {
     return { ...exports, rows, requests, failSource() { sourceFails = true; }, setTime(value) { currentTime = value; } };
 }
 
-function source(percentage, isCurrent) {
+const weekly = {
+    monday: '06:00-22:00', tuesday: '06:00-22:00', wednesday: '06:00-22:00', thursday: '06:00-22:00',
+    friday: '06:00-22:00', saturday: '07:00-22:00', sunday: '07:00-22:00',
+};
+
+// Shape of https://api.ai-fitness.de/api/studios/coburg.json; `current: false` means no live status.
+function source(percentage, current, holidayHours = {}) {
     return {
-        startTime: '06:00:00', endTime: '22:00:00',
-        items: [{ startTime: '21:00:00', endTime: '22:00:00', percentage, level: 'LOW', isCurrent }],
+        id: '1412625590', slug: 'coburg', openingHours: weekly, holidayHours,
+        status: current ? { isOpen: true, currentOccupancy: 'low', occupancyPercent: percentage } : null,
     };
 }
 
@@ -91,7 +97,7 @@ test('a missing slot during opening hours is unavailable and does not create a m
 
 test('a source outage keeps previously confirmed early weekend hours and labels the saved reading stale', async () => {
     const now = new Date('2026-10-10T06:30:00+02:00');
-    const fetcher = loadFetcher(now.toISOString(), source(17, true));
+    const fetcher = loadFetcher(now.toISOString(), source(17, true, { '2026-10-10': '06:00-22:00' }));
     assert.equal((await fetcher.fetchAndStoreUtilization()).success, true);
     fetcher.failSource();
     assert.equal((await fetcher.fetchAndStoreUtilization()).success, false);
@@ -131,4 +137,31 @@ test('delayed weather cannot move a measurement into a later hour', async () => 
     await pending;
     assert.equal(fetcher.rows[0].timestamp.toISOString(), new Date(observed).toISOString());
     assert.equal(fetcher.rows[0].hour, 12);
+});
+
+test('the uppercase level from the new studio payload is stored', async () => {
+    const payload = source(55, true);
+    payload.status.currentOccupancy = 'medium';
+    const fetcher = loadFetcher('2026-10-07T12:00:00+02:00', payload);
+    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true, percentage: 55 });
+    assert.equal(fetcher.rows[0].level, 'MEDIUM');
+});
+
+test('a studio reporting isOpen=false does not create a measurement', async () => {
+    const payload = source(12, true);
+    payload.status.isOpen = false;
+    const fetcher = loadFetcher('2026-10-07T12:00:00+02:00', payload);
+    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true });
+    assert.deepEqual(fetcher.rows, []);
+});
+
+test('holiday hours override the weekly schedule', async () => {
+    const now = new Date('2026-12-24T14:00:00+01:00');
+    const fetcher = loadFetcher(now.toISOString(), source(30, true, { '2026-12-24': '07:00-13:00' }));
+    assert.deepEqual(await fetcher.fetchAndStoreUtilization(), { success: true });
+    assert.deepEqual(fetcher.rows, []);
+    assert.deepEqual(fetcher.getUtilizationSourceSnapshot().openingHours, { startTime: '07:00:00', endTime: '13:00:00' });
+    assert.equal(statusHelpers.getUtilizationStatus({
+        now, lastUpdated: null, source: fetcher.getUtilizationSourceSnapshot(), pollIntervalMinutes: 15,
+    }), 'closed');
 });

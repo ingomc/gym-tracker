@@ -1,8 +1,8 @@
 import { db, schema } from './db';
-import { getPollIntervalMinutes, getUtilizationStatus, type UtilizationSourceSnapshot } from './utilization-status';
+import { getPollIntervalMinutes, getUtilizationStatus, type OpeningHours, type UtilizationSourceSnapshot } from './utilization-status';
 import { studioDateString, studioParts } from '../utils/studio-time';
 
-const API_URL = process.env.API_URL || 'https://www.ai-fitness.de/connect/v1/studio/1412625590/utilization';
+const API_URL = process.env.API_URL || 'https://api.ai-fitness.de/api/studios/coburg.json';
 
 // Coburg, Germany coordinates for weather API
 const WEATHER_LAT = 50.2612;
@@ -11,18 +11,27 @@ const WEATHER_LON = 10.9628;
 // Extended weather API with UV index and sun times
 const WEATHER_API_URL = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}&current=temperature_2m,precipitation,cloud_cover,rain,uv_index&daily=sunrise,sunset&timezone=Europe/Berlin&forecast_days=1`;
 
-interface UtilizationItem {
-    startTime: string;
-    endTime: string;
-    percentage: number;
-    level: string;
-    isCurrent: boolean;
+interface StudioStatus {
+    isOpen: boolean;
+    currentOccupancy: string;
+    occupancyPercent: number;
 }
 
-interface UtilizationResponse {
-    startTime: string;
-    endTime: string;
-    items: UtilizationItem[];
+// AI Fitness studio detail payload (since Nov 2026; replaces /connect/v1/.../utilization).
+interface StudioResponse {
+    openingHours?: Record<string, string>;
+    holidayHours?: Record<string, string>;
+    status: StudioStatus | null;
+}
+
+const WEEKDAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+function todaysOpeningHours(data: StudioResponse, now: Date): OpeningHours | undefined {
+    const { date, weekday } = studioParts(now);
+    // Holiday hours (e.g. "07:00-13:00" on 24.12.) override the weekly schedule.
+    const range = data.holidayHours?.[date] ?? data.openingHours?.[WEEKDAY_KEYS[weekday]];
+    const match = typeof range === 'string' ? /^\s*(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\s*$/.exec(range) : null;
+    return match ? { startTime: `${match[1]}:00`, endTime: `${match[2]}:00` } : undefined;
 }
 
 let sourceSnapshot: UtilizationSourceSnapshot | null = null;
@@ -160,23 +169,26 @@ async function performFetch(): Promise<FetchResult> {
     try {
         const holidays = getSchoolHolidays();
         const weatherPromise = fetchWeather();
-        const utilizationResponse = await fetch(API_URL, { signal: AbortSignal.timeout(8000) });
+        const utilizationResponse = await fetch(API_URL, {
+            signal: AbortSignal.timeout(8000),
+            cache: 'no-store',
+            headers: { Accept: 'application/json' },
+        });
 
         if (!utilizationResponse.ok) {
             throw new Error(`API responded with status ${utilizationResponse.status}`);
         }
 
-        const data: UtilizationResponse = await utilizationResponse.json();
+        const data: StudioResponse = await utilizationResponse.json();
         // Timestamp the source observation before waiting for optional weather.
         const now = new Date();
-        if (!Array.isArray(data.items)) throw new Error('Invalid utilization response');
+        if (!data || typeof data !== 'object' || !('status' in data)) throw new Error('Invalid utilization response');
 
-        // Find the current slot
-        const currentSlot = data.items.find(item => item.isCurrent === true);
+        const current = data.status;
         sourceSnapshot = {
             checkedAt: now,
-            status: currentSlot ? 'current' : 'missing',
-            openingHours: { startTime: data.startTime, endTime: data.endTime },
+            status: current ? 'current' : 'missing',
+            openingHours: todaysOpeningHours(data, now),
         };
         const status = getUtilizationStatus({
             now,
@@ -184,17 +196,19 @@ async function performFetch(): Promise<FetchResult> {
             source: sourceSnapshot,
             pollIntervalMinutes: getPollIntervalMinutes(),
         });
-        if (status === 'closed') {
+        if (status === 'closed' || current?.isOpen === false) {
             // Closure is display state, not a measured zero for historical charts.
             return { success: true };
         }
-        if (!currentSlot) {
-            console.warn(`[${now.toISOString()}] No current slot found during opening hours`);
-            return { success: false, error: 'No current slot found in API response' };
+        if (!current) {
+            console.warn(`[${now.toISOString()}] No current utilization during opening hours`);
+            return { success: false, error: 'No current utilization in API response' };
         }
 
-        if (!Number.isFinite(currentSlot.percentage) || currentSlot.percentage < 0
-            || currentSlot.percentage > 100 || !['LOW', 'MEDIUM', 'HIGH'].includes(currentSlot.level)) {
+        const level = String(current.currentOccupancy ?? '').toUpperCase();
+        const percentage = current.occupancyPercent;
+        if (typeof percentage !== 'number' || !Number.isFinite(percentage) || percentage < 0
+            || percentage > 100 || !['LOW', 'MEDIUM', 'HIGH'].includes(level)) {
             throw new Error('Invalid current utilization measurement');
         }
         const { weekday, hour } = studioParts(now);
@@ -208,8 +222,8 @@ async function performFetch(): Promise<FetchResult> {
             timestamp: now,
             weekday,
             hour,
-            percentage: currentSlot.percentage,
-            level: currentSlot.level,
+            percentage,
+            level,
             // Weather data
             temperature: weather?.temperature ?? null,
             precipitation: weather?.precipitation ?? null,
@@ -228,9 +242,9 @@ async function performFetch(): Promise<FetchResult> {
             ? `${weather.temperature}°C, UV:${weather.uvIndex ?? '-'}, ${weather.isRaining ? 'Regen' : 'kein Regen'}`
             : 'no weather data';
         const holidayInfo = schoolHoliday.isHoliday ? ` | Ferien: ${schoolHoliday.name}` : '';
-        console.log(`[${now.toISOString()}] Stored: ${currentSlot.percentage}% (${currentSlot.level}) | Weather: ${weatherInfo}${holidayInfo}`);
+        console.log(`[${now.toISOString()}] Stored: ${percentage}% (${level}) | Weather: ${weatherInfo}${holidayInfo}`);
 
-        return { success: true, percentage: currentSlot.percentage };
+        return { success: true, percentage };
     } catch (error) {
         sourceSnapshot = {
             checkedAt: new Date(),
