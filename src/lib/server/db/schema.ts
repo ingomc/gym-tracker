@@ -25,5 +25,13 @@ export const utilizationReadings = sqliteTable('utilization_readings', {
   uniqueIndex('idx_readings_timestamp_unique').on(table.timestamp),
 ]);
 
+/** Special opening hours per studio-local date; regular weekly hours are not stored. */
+export const studioHours = sqliteTable('studio_hours', {
+  date: text('date').primaryKey(), // YYYY-MM-DD (Europe/Berlin)
+  startTime: text('start_time').notNull(), // HH:MM:SS
+  endTime: text('end_time').notNull(), // HH:MM:SS
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+});
+
 export type UtilizationReading = typeof utilizationReadings.$inferSelect;
 export type NewUtilizationReading = typeof utilizationReadings.$inferInsert;

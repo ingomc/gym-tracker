@@ -3,6 +3,7 @@
     import CurrentUtilization from '$lib/components/CurrentUtilization.svelte';
     import TodayChart from '$lib/components/TodayChart.svelte';
     import Heatmap from '$lib/components/Heatmap.svelte';
+    import ClassSchedule from '$lib/components/ClassSchedule.svelte';
     import DataTools from '$lib/components/DataTools.svelte';
     import AdminLogin from '$lib/components/AdminLogin.svelte';
     import { isAuthenticated, checkAuth } from '$lib/stores/auth';
@@ -29,6 +30,7 @@
 <main id="main-content">
     <CurrentUtilization />
     <TodayChart />
+    <ClassSchedule />
     <section class="card heatmap-section" aria-labelledby="heatmap-title">
         <div class="card-header">
             <div>

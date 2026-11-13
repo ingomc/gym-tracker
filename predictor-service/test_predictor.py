@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 from app import ForecastService, create_app, selected_model
 from benchmark import forecast_origin, select_candidate, statistics
-from calendar_features import BERLIN, before, day_info, day_slots, feature_frame, normalize_readings, parse_date
+from calendar_features import (BERLIN, before, day_info, day_slots, feature_frame, normalize_readings, opening_hours,
+                               parse_date, parse_hour_overrides)
 from ledger import ForecastLedger
 from models import MODEL_VERSION, Calibration, ProphetCandidate, WeightedProfile, calibrate, conformal_radius, horizon_key
 
@@ -49,6 +50,15 @@ class CalendarTests(unittest.TestCase):
             {'timestamp': '2026-10-10T04:15:00Z', 'percentage': 8},
             {'timestamp': '2026-10-10T05:15:00Z', 'percentage': 0}])
         self.assertEqual(frame['y'].tolist(), [0])
+
+    def test_special_hours_replace_weekly_schedule(self):
+        overrides = parse_hour_overrides([('2026-12-24', '07:00:00', '13:00:00'), ('2027-01-01', '10:00', '22:00'),
+                                          ('2026-12-31', '13:00', '07:00'), ('bad', '07:00', '13:00'),
+                                          ('2026-12-26', 'geschlossen', '22:00')])
+        self.assertEqual(overrides, {date(2026, 12, 24): (420, 780), date(2027, 1, 1): (600, 1320)})
+        slots = day_slots(date(2026, 12, 24), overrides)
+        self.assertEqual((len(slots), slots[0].hour, slots[-1].hour, slots[-1].minute), (24, 7, 12, 45))
+        self.assertEqual(opening_hours(date(2026, 12, 23), overrides), (360, 1320))
 
     def test_duplicate_timestamp_and_slot_last_measurement(self):
         frame = normalize_readings([
@@ -291,6 +301,30 @@ class ServiceTests(unittest.TestCase):
         response = self.client.get('/predict?date=2026-10-10')
         self.assertEqual(response.json['openingHours'], {'startTime': '07:00', 'endTime': '22:00'})
         self.assertEqual(response.json['predictions'][0]['hour'], 7)
+
+    def test_special_hours_limit_response_and_hide_earlier_forecasts(self):
+        self.service.current = self.bundle()
+        # Issued while 2026-10-08 still had regular hours: stays stored but is no longer shown.
+        self.ledger.save('2026-10-07T09:00:00Z', '2026-10-01T00:00:00Z', 'original', [
+            {'targetAt': '2026-10-08T15:00:00Z', 'horizon': 'day_1', 'percentage': 30}])
+        self.service.hours_loader = lambda: {date(2026, 10, 8): (420, 780)}
+        response = self.client.get('/predict?date=2026-10-08')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['openingHours'], {'startTime': '07:00', 'endTime': '13:00'})
+        self.assertTrue(response.json['specialOpeningHours'])
+        hours = {point['hour'] for point in response.json['predictions']}
+        self.assertEqual((min(hours), max(hours)), (7, 12))
+        with self.ledger.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM forecasts WHERE model_version='original'").fetchone()[0], 1)
+
+    def test_missing_hours_table_falls_back_to_weekly_schedule(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'gym.db'
+            import sqlite3
+            sqlite3.connect(path).close()
+            with patch('app.DATABASE_PATH', str(path)):
+                from app import load_hour_overrides
+                self.assertEqual(load_hour_overrides(), {})
 
     def test_prospective_evaluation_joins_only_matching_observations(self):
         self.ledger.save('2026-10-06T10:00:00Z', '2026-10-05T19:47:00Z', 'original', [

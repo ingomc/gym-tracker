@@ -9,7 +9,8 @@ from contextlib import closing
 from pathlib import Path
 import pandas as pd
 from flask import Flask, jsonify, request
-from calendar_features import BERLIN, UTC, day_info, day_slots, iso_utc, normalize_readings, opening_hours, parse_date
+from calendar_features import (BERLIN, UTC, day_info, day_slots, format_minutes, iso_utc, normalize_readings,
+                               opening_hours, parse_date, parse_hour_overrides)
 from ledger import ForecastLedger
 from models import MODEL_VERSION, calibrate, make_model, horizon_key
 from weather import WEATHER_VERSION, WeatherCache, interval_envelope, train_weather_response
@@ -29,6 +30,15 @@ def load_training_data():
     return normalize_readings(records)
 
 
+def load_hour_overrides():
+    """Special opening hours the dashboard synced from AI Fitness; none if unavailable."""
+    try:
+        with closing(sqlite3.connect(f'file:{DATABASE_PATH}?mode=ro', uri=True)) as connection:
+            return parse_hour_overrides(connection.execute('SELECT date, start_time, end_time FROM studio_hours'))
+    except sqlite3.Error:
+        return {}
+
+
 def selected_model(path=None):
     """Fail closed to the corrected baseline unless the benchmark gate passed."""
     location = Path(path or os.environ.get('BENCHMARK_SELECTION_PATH', Path(__file__).with_name('selection.json')))
@@ -45,8 +55,10 @@ def selected_model(path=None):
 
 
 class ForecastService:
-    def __init__(self, loader=load_training_data, ledger=None, clock=None, weather_cache=None):
+    def __init__(self, loader=load_training_data, ledger=None, clock=None, weather_cache=None,
+                 hours_loader=load_hour_overrides):
         self.loader = loader
+        self.hours_loader = hours_loader
         self.ledger = ledger or ForecastLedger(PREDICTION_DATABASE_PATH)
         self.clock = clock or (lambda: datetime.now(UTC))
         self.weather = weather_cache or WeatherCache(Path(self.ledger.path).with_name('weather-cache.json'), clock=self.clock)
@@ -158,10 +170,25 @@ class ForecastService:
     def predict(self, day, issued_at=None):
         now = pd.Timestamp(issued_at or self.clock())
         today = now.tz_convert(BERLIN).date()
+        try:
+            overrides = self.hours_loader()
+        except Exception:
+            LOGGER.warning('Special opening hours unavailable; using weekly schedule')
+            overrides = {}
+        start, end = opening_hours(day, overrides)
         metadata = {'date': day.isoformat(), **day_info(day), 'weather': None,
-                    'openingHours': {'startTime': f'{opening_hours(day)[0]:02d}:00', 'endTime': '22:00'},
-                    'intervalCoverage': .8}
-        stored = self.ledger.for_day(day, now)
+                    'openingHours': {'startTime': format_minutes(start), 'endTime': format_minutes(end)},
+                    'specialOpeningHours': day in overrides, 'intervalCoverage': .8}
+
+        def while_open(points):
+            # Forecasts issued before special hours were published stay in the ledger but are not shown.
+            kept = []
+            for point in points:
+                local = pd.Timestamp(point['targetAt']).tz_convert(BERLIN)
+                if start <= local.hour * 60 + local.minute < end:
+                    kept.append(point)
+            return kept
+        stored = while_open(self.ledger.for_day(day, now))
         if day < today:
             if not stored:
                 return {**metadata, 'status': 'unavailable', 'predictions': [],
@@ -184,7 +211,7 @@ class ForecastService:
                 recent = self.loader()
             except Exception:
                 LOGGER.warning('Recent measurements unavailable; using fitted profile')
-        times = day_slots(day)
+        times = day_slots(day, overrides)
         future = times[times > now]
         points = bundle['model'].predict(future, now, recent) if len(future) else []
         new_points = []
@@ -209,7 +236,7 @@ class ForecastService:
                                'weatherTrainedThrough': iso_utc(weather_model.trained_through) if supported else None})
         self.ledger.save(now, bundle['trainedThrough'], bundle['modelVersion'], new_points)
         # Read back persisted values: repeated requests in a quarter never rewrite history.
-        predictions = self.ledger.for_day(day, now)
+        predictions = while_open(self.ledger.for_day(day, now))
         if not predictions:
             return {**metadata, 'status': 'unavailable', 'predictions': [],
                     'error': 'Für diesen Tag liegen noch keine gespeicherten Prognosen vor.'}, 503

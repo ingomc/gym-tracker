@@ -1,6 +1,7 @@
 import { db, schema } from './db';
 import { getPollIntervalMinutes, getUtilizationStatus, type OpeningHours, type UtilizationSourceSnapshot } from './utilization-status';
 import { studioDateString, studioParts } from '../utils/studio-time';
+import { parseHoursRange, syncHolidayHours } from './studio-hours';
 
 const API_URL = process.env.API_URL || 'https://api.ai-fitness.de/api/studios/coburg.json';
 
@@ -29,9 +30,7 @@ const WEEKDAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'f
 function todaysOpeningHours(data: StudioResponse, now: Date): OpeningHours | undefined {
     const { date, weekday } = studioParts(now);
     // Holiday hours (e.g. "07:00-13:00" on 24.12.) override the weekly schedule.
-    const range = data.holidayHours?.[date] ?? data.openingHours?.[WEEKDAY_KEYS[weekday]];
-    const match = typeof range === 'string' ? /^\s*(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\s*$/.exec(range) : null;
-    return match ? { startTime: `${match[1]}:00`, endTime: `${match[2]}:00` } : undefined;
+    return parseHoursRange(data.holidayHours?.[date] ?? data.openingHours?.[WEEKDAY_KEYS[weekday]]);
 }
 
 let sourceSnapshot: UtilizationSourceSnapshot | null = null;
@@ -183,6 +182,12 @@ async function performFetch(): Promise<FetchResult> {
         // Timestamp the source observation before waiting for optional weather.
         const now = new Date();
         if (!data || typeof data !== 'object' || !('status' in data)) throw new Error('Invalid utilization response');
+
+        try {
+            syncHolidayHours(data.holidayHours, studioDateString(now), now);
+        } catch (error) {
+            console.error('[StudioHours] Failed to store special opening hours:', error);
+        }
 
         const current = data.status;
         sourceSnapshot = {

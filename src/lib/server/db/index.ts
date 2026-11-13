@@ -60,6 +60,17 @@ addColumnIfNotExists('utilization_readings', 'sunset', 'TEXT');
 addColumnIfNotExists('utilization_readings', 'is_school_holiday', 'INTEGER');
 addColumnIfNotExists('utilization_readings', 'holiday_name', 'TEXT');
 
+// Published special opening hours (e.g. 24.12. 07:00-13:00), synced from AI Fitness.
+// The predictor reads this table through its read-only connection.
+sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS studio_hours (
+        date TEXT PRIMARY KEY,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+`);
+
 ensureUniqueReadingTimestamps(sqlite, DB_PATH);
 
 export const db = drizzle(sqlite, { schema });

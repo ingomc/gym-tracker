@@ -271,3 +271,57 @@ test('heatmap weights days equally and exposes true sample sizes, ranges, and st
         assert.deepEqual(cell, { hour, avgPercentage: 20, maxPercentage: 40, minPercentage: 0, dataPoints: 5, observedDays: 2 });
     } finally { context.sqlite.close(); }
 });
+
+test('special opening hours mirror the source for upcoming days and keep past days', () => {
+    const context = database();
+    context.sqlite.exec('CREATE TABLE studio_hours (date TEXT PRIMARY KEY, start_time TEXT NOT NULL, end_time TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+    const { syncHolidayHours } = loadTs('src/lib/server/studio-hours.ts', { './db': context });
+    const rows = () => context.sqlite.prepare('SELECT date, start_time AS start, end_time AS end FROM studio_hours ORDER BY date').all();
+    syncHolidayHours({ '2026-11-01': '10:00-18:00' }, '2026-11-01');
+    syncHolidayHours({ '2026-12-24': '07:00-13:00', '2026-12-31': '07:00-13:00', 'bad': 'x' }, '2026-11-13');
+    assert.deepEqual(rows(), [
+        { date: '2026-11-01', start: '10:00:00', end: '18:00:00' },
+        { date: '2026-12-24', start: '07:00:00', end: '13:00:00' },
+        { date: '2026-12-31', start: '07:00:00', end: '13:00:00' },
+    ]);
+    // A withdrawn or changed announcement replaces the upcoming rows only.
+    syncHolidayHours({ '2026-12-24': '08:00-12:00' }, '2026-11-14');
+    assert.deepEqual(rows(), [
+        { date: '2026-11-01', start: '10:00:00', end: '18:00:00' },
+        { date: '2026-12-24', start: '08:00:00', end: '12:00:00' },
+    ]);
+    syncHolidayHours(null, '2026-11-14');
+    assert.equal(rows().length, 2);
+});
+
+test('class schedule keeps displayable slots only and hides ended classes', async () => {
+    const { normalizeClasses } = loadTs('src/lib/server/classes.ts');
+    const slot = {
+        id: 1, start: '2026-11-14T10:00:00+01:00', end: '2026-11-14T10:30:00+01:00', title: ' Functional Kurs ',
+        category: 'functionaltraining', instructors: ['Trainer', 3], max: 15, booked: 4, status: 'available',
+        bookingOpen: true, bookingOpensAt: null, bookingUrl: 'https://www.mysports.com/x',
+    };
+    const result = normalizeClasses({ slots: [
+        { ...slot, id: 2, start: '2026-11-13T09:00:00+01:00', bookingUrl: 'javascript:alert(1)', booked: -1 },
+        slot, { ...slot, id: 3, start: 'soon' }, null,
+    ] });
+    assert.deepEqual(result.map(item => item.id), [2, 1]);
+    assert.equal(result[0].bookingUrl, null);
+    assert.equal(result[0].booked, null);
+    assert.equal(result[1].title, 'Functional Kurs');
+    assert.deepEqual(result[1].instructors, ['Trainer']);
+    assert.throws(() => normalizeClasses({ error: true }));
+
+    const loader = loadTs('src/lib/server/classes.ts', {}, new Map());
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ slots: [slot, { ...slot, id: 4, start: '2026-11-13T09:00:00+01:00', end: '2026-11-13T09:30:00+01:00' }] })); };
+    try {
+        const upcoming = await loader.getUpcomingClasses(Date.parse('2026-11-13T12:00:00+01:00'));
+        assert.deepEqual(upcoming.map(item => item.id), [1]);
+        await loader.getUpcomingClasses(Date.parse('2026-11-13T12:00:00+01:00'));
+        assert.equal(calls, 1);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});

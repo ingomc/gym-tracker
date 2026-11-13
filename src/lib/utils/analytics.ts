@@ -63,4 +63,7 @@ export const analytics = {
 
     /** Track weather popover open */
     weatherView: () => trackEvent('weather-view'),
+
+    /** Track clicks on a class booking link */
+    classBooking: (title: string) => trackEvent('class-booking', { title }),
 };

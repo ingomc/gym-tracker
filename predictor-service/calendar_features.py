@@ -61,14 +61,36 @@ def day_info(day):
             'schoolHolidayName': school_name}
 
 
-def opening_hours(day):
-    return (7 if day.weekday() >= 5 else 6), CLOSE_HOUR
+def opening_hours(day, overrides=None):
+    """Studio-local (start, end) minutes; published special hours replace the weekly schedule."""
+    if overrides and day in overrides:
+        return overrides[day]
+    return (7 if day.weekday() >= 5 else 6) * 60, CLOSE_HOUR * 60
 
 
-def day_slots(day):
-    return pd.DatetimeIndex([datetime.combine(day, time(hour, minute), BERLIN)
-                             for hour in range(*opening_hours(day))
-                             for minute in (0, 15, 30, 45)])
+def format_minutes(minutes):
+    return f'{minutes // 60:02d}:{minutes % 60:02d}'
+
+
+def parse_hour_overrides(rows):
+    """Validated {date: (start, end)} from (YYYY-MM-DD, HH:MM[:SS], HH:MM[:SS]) rows."""
+    result = {}
+    for day, start, end in rows:
+        try:
+            parsed = [int(part[:2]) * 60 + int(part[3:5]) for part in (start, end)
+                      if re.fullmatch(r'([01]\d|2[0-4]):[0-5]\d(:[0-5]\d)?', part or '')]
+            if len(parsed) == 2 and parsed[0] < parsed[1] <= 24 * 60:
+                result[parse_date(day)] = tuple(parsed)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def day_slots(day, overrides=None):
+    start, end = opening_hours(day, overrides)
+    first = -(-start // 15) * 15  # first full quarter-hour after opening
+    return pd.DatetimeIndex([datetime.combine(day, time(minute // 60, minute % 60), BERLIN)
+                             for minute in range(first, end, 15)])
 
 
 def iso_utc(value):

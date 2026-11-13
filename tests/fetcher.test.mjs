@@ -12,6 +12,10 @@ const { outputText: timeCode } = ts.transpileModule(readFileSync(new URL('../src
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 });
 const timeHelpers = await import(`data:text/javascript;base64,${Buffer.from(timeCode).toString('base64')}`);
+// studio-hours.ts only needs parseHoursRange here; its DB sync is replaced per test.
+const { outputText: hoursCode } = ts.transpileModule(readFileSync(new URL('../src/lib/server/studio-hours.ts', import.meta.url), 'utf8')
+    .replace(/^import .*$/gm, ''), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
+const hoursHelpers = await import(`data:text/javascript;base64,${Buffer.from(hoursCode).toString('base64')}`);
 const fetcherSource = readFileSync(new URL('../src/lib/server/fetcher.ts', import.meta.url), 'utf8');
 const { outputText: fetcherCode } = ts.transpileModule(fetcherSource, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -19,6 +23,7 @@ const { outputText: fetcherCode } = ts.transpileModule(fetcherSource, {
 
 function loadFetcher(now, utilization, options = {}) {
     const rows = [];
+    const syncedHours = [];
     let sourceFails = false;
     let currentTime = now;
     const requests = [];
@@ -32,6 +37,10 @@ function loadFetcher(now, utilization, options = {}) {
         './db': { db: { insert: () => ({ values: async row => { rows.push(row); } }) }, schema: { utilizationReadings: {} } },
         './utilization-status': statusHelpers,
         '../utils/studio-time': timeHelpers,
+        './studio-hours': {
+            parseHoursRange: hoursHelpers.parseHoursRange,
+            syncHolidayHours: (raw, today) => { syncedHours.push({ raw, today }); },
+        },
     };
     const fixtureFetch = async (url, init) => {
         requests.push({ url, signal: init?.signal });
@@ -53,7 +62,7 @@ function loadFetcher(now, utilization, options = {}) {
         { env: { API_URL: apiUrl, POLL_INTERVAL_MINUTES: '15' } },
         { log() {}, warn() {}, error() {} },
     );
-    return { ...exports, rows, requests, failSource() { sourceFails = true; }, setTime(value) { currentTime = value; } };
+    return { ...exports, rows, syncedHours, requests, failSource() { sourceFails = true; }, setTime(value) { currentTime = value; } };
 }
 
 const weekly = {
@@ -164,4 +173,18 @@ test('holiday hours override the weekly schedule', async () => {
     assert.equal(statusHelpers.getUtilizationStatus({
         now, lastUpdated: null, source: fetcher.getUtilizationSourceSnapshot(), pollIntervalMinutes: 15,
     }), 'closed');
+});
+
+test('published special hours are handed to the studio-hours sync with the studio date', async () => {
+    const fetcher = loadFetcher('2026-12-23T23:30:00Z', source(30, true, { '2026-12-24': '07:00-13:00' }));
+    await fetcher.fetchAndStoreUtilization();
+    assert.deepEqual(fetcher.syncedHours, [{ raw: { '2026-12-24': '07:00-13:00' }, today: '2026-12-24' }]);
+});
+
+test('hour ranges parse strictly', () => {
+    assert.deepEqual(hoursHelpers.parseHoursRange('07:00-13:00'), { startTime: '07:00:00', endTime: '13:00:00' });
+    assert.deepEqual(hoursHelpers.parseHoursRange(' 10:30 - 24:00 '), { startTime: '10:30:00', endTime: '24:00:00' });
+    for (const value of ['geschlossen', '13:00-07:00', '7:00-13:00', null, 5]) {
+        assert.equal(hoursHelpers.parseHoursRange(value), undefined);
+    }
 });
