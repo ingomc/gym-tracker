@@ -30,7 +30,6 @@
 <main id="main-content">
     <CurrentUtilization />
     <TodayChart />
-    <ClassSchedule />
     <section class="card heatmap-section" aria-labelledby="heatmap-title">
         <div class="card-header">
             <div>
@@ -48,6 +47,7 @@
         </div>
         <Heatmap weeks={selectedWeeks} />
     </section>
+    <ClassSchedule />
     {#if $isAuthenticated}<DataTools />{/if}
 </main>
 

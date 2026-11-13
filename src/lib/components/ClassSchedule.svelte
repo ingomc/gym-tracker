@@ -18,20 +18,11 @@
     function dayLabel(start: string) {
         const day = studioDateString(new Date(start));
         const today = studioDateString();
-        return day === today ? 'Heute' : day === addStudioDays(today, 1) ? 'Morgen' : weekday.format(new Date(start));
+        return day === today ? 'Heute' : day === addStudioDays(today, 1) ? 'Morgen' : weekday.format(new Date(start)).replace(',', '');
     }
-    const groups = $derived.by(() => {
-        const result: { label: string; items: StudioClass[] }[] = [];
-        for (const item of classes) {
-            const label = dayLabel(item.start);
-            if (result.at(-1)?.label === label) result.at(-1)!.items.push(item);
-            else result.push({ label, items: [item] });
-        }
-        return result;
-    });
     // "Trainer" is the booking system's placeholder, not a person.
     const named = (item: StudioClass) => item.instructors.filter(name => name.trim() && name.trim().toLowerCase() !== 'trainer');
-    const full = (item: StudioClass) => item.max !== null && item.booked !== null && item.max > 0 && item.booked >= item.max;
+    const free = (item: StudioClass) => item.max !== null && item.booked !== null ? Math.max(0, item.max - item.booked) : null;
     const fill = (item: StudioClass) => item.max ? Math.min(100, Math.round((item.booked ?? 0) / item.max * 100)) : 0;
 
     async function load() {
@@ -55,67 +46,60 @@
     <section class="card" aria-labelledby="classes-title">
         <div class="card-header">
             <h2 id="classes-title" class="card-title">Kurse</h2>
-            <span class="hint">Belegung laut Buchungssystem</span>
+            <span class="hint">{classes.length} {classes.length === 1 ? 'Termin' : 'Termine'} in den nächsten Tagen</span>
         </div>
-        {#each groups as group (group.label)}
-            <h3>{group.label}</h3>
-            <ul>
-                {#each group.items as item (item.id)}
-                    <li>
-                        <time datetime={item.start}>{clock.format(new Date(item.start))}<span>–{clock.format(new Date(item.end))}</span></time>
-                        <div class="details">
-                            <strong>{item.title}</strong>
-                            {#if named(item).length}<span class="muted">mit {named(item).join(', ')}</span>{/if}
-                        </div>
-                        {#if item.max}
-                            <div class="spots" title={`${item.booked ?? 0} von ${item.max} Plätzen gebucht`}>
-                                <span class="bar"><span style={`width: ${fill(item)}%`} class:full={full(item)}></span></span>
-                                <span class="count">{item.booked ?? 0}/{item.max}</span>
-                            </div>
+        <ul class="tiles">
+            {#each classes as item (item.id)}
+                {@const left = free(item)}
+                {@const bookable = item.bookingOpen && item.bookingUrl && left !== 0}
+                <li class="tile" class:soon={dayLabel(item.start) === 'Heute'} style={`--fill: ${fill(item)}%`}>
+                    <div class="when">
+                        <span class="day">{dayLabel(item.start)}</span>
+                        <time datetime={item.start}>{clock.format(new Date(item.start))}</time>
+                    </div>
+                    <strong class="title">{item.title}</strong>
+                    {#if named(item).length}<span class="muted">mit {named(item).join(', ')}</span>{/if}
+                    <div class="footer">
+                        <span class="spots" class:full={left === 0}>
+                            {left === null ? '' : left === 0 ? 'Ausgebucht' : `${left} ${left === 1 ? 'Platz' : 'Plätze'} frei`}
+                        </span>
+                        {#if bookable}
+                            <a href={item.bookingUrl} target="_blank" rel="noopener noreferrer" onclick={() => analytics.classBooking(item.title)}
+                               aria-label={`${item.title} am ${dayLabel(item.start)} um ${clock.format(new Date(item.start))} buchen`}>Buchen <span aria-hidden="true">↗</span></a>
+                        {:else if item.bookingOpensAt && left !== 0}
+                            <span class="muted">ab {opensAt.format(new Date(item.bookingOpensAt)).replace(', ', ' ')}</span>
                         {/if}
-                        <div class="action">
-                            {#if full(item)}
-                                <span class="muted">Ausgebucht</span>
-                            {:else if item.bookingOpen && item.bookingUrl}
-                                <a href={item.bookingUrl} target="_blank" rel="noopener noreferrer" onclick={() => analytics.classBooking(item.title)}>Buchen <span aria-hidden="true">↗</span></a>
-                            {:else if item.bookingOpensAt}
-                                <span class="muted">buchbar ab {opensAt.format(new Date(item.bookingOpensAt)).replace(', ', ' ')}</span>
-                            {/if}
-                        </div>
-                    </li>
-                {/each}
-            </ul>
-        {/each}
+                    </div>
+                    {#if item.max}<span class="meter" aria-hidden="true"></span>{/if}
+                </li>
+            {/each}
+        </ul>
     </section>
 {/if}
 
 <style>
     .card-title { font-size: 1rem; }
-    .hint, .muted { color: var(--text-secondary); font-size: .68rem; }
-    h3 { font-size: .7rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .08em; margin: 10px 0 4px; }
-    h3:first-of-type { margin-top: 0; }
-    ul { list-style: none; margin: 0; padding: 0; }
-    li { display: grid; grid-template-columns: 82px minmax(0, 1fr) 76px 120px; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border-color); font-size: .78rem; }
-    li:first-child { border-top: none; }
-    time { font-variant-numeric: tabular-nums; font-weight: 600; }
-    time span { color: var(--text-secondary); font-weight: 400; }
-    .details { display: flex; flex-direction: column; min-width: 0; }
-    .details strong { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .spots { display: flex; align-items: center; gap: 6px; }
-    .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--bg-tertiary); overflow: hidden; }
-    .bar span { display: block; height: 100%; background: var(--accent-primary); }
-    .bar span.full { background: var(--danger); }
-    .count { color: var(--text-secondary); font-size: .68rem; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
-    .action { text-align: right; }
-    .action a { color: var(--accent-primary); font-weight: 600; font-size: .75rem; text-decoration: none; }
-    .action a:hover { text-decoration: underline; }
-    .action a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: 3px; }
+    .hint, .muted { color: var(--text-secondary); font-size: .66rem; }
+    .tiles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+    .tile { position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 11px 12px 13px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-primary); overflow: hidden; }
+    .tile.soon { border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color)); }
+    .when { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
+    .day { color: var(--text-secondary); font-size: .64rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+    .soon .day { color: var(--accent-primary); }
+    time { font-size: .95rem; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+    .title { font-size: .8rem; font-weight: 550; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 8px; font-size: .7rem; }
+    .spots { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+    .spots.full { color: var(--danger); }
+    a { color: var(--accent-primary); font-weight: 600; text-decoration: none; white-space: nowrap; }
+    a:hover { text-decoration: underline; }
+    a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: 3px; }
+    /* Booked share as a hairline along the tile's bottom edge. */
+    .meter { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--bg-tertiary); }
+    .meter::after { content: ''; position: absolute; inset: 0 auto 0 0; width: var(--fill); background: var(--accent-primary); }
     @media (max-width: 700px) {
-        li { grid-template-columns: 46px minmax(0, 1fr) auto; grid-template-areas: 'time details action' 'time spots action'; row-gap: 3px; font-size: .74rem; }
-        time { grid-area: time; align-self: start; }
-        time span { display: none; }
-        .details { grid-area: details; }
-        .spots { grid-area: spots; max-width: 130px; }
-        .action { grid-area: action; }
+        .tiles { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; margin: 0 -12px; padding: 0 12px 2px; scroll-padding: 0 12px; }
+        .tiles::-webkit-scrollbar { display: none; }
+        .tile { flex: 0 0 min(64%, 210px); scroll-snap-align: start; }
     }
 </style>
